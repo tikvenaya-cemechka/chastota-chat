@@ -3,13 +3,15 @@ import random
 import string
 import time
 import secrets
+import os
 from flask import Flask, render_template_string, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
 app = Flask(__name__)
-DB_PATH = 'chastota.db'
-ONLINE_SECONDS = 12 # если человек делал запрос за последние N секунд — считаем "в сети"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'chastota.db') # абсолютный путь — чтобы файл базы всегда был один и тот же
+ONLINE_SECONDS = 20 # если человек делал запрос за последние N секунд — считаем "в сети"
 TYPING_SECONDS = 3
 
 FOUNDER_USERNAMES = [] # впиши сюда свой юзернейм и юзернеймы друзей, когда будете готовы
