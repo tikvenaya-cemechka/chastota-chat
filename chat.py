@@ -38,6 +38,15 @@ def init_db():
     conn.execute('''CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY, username TEXT
     )''')
+    # На случай если база уже существует со старой структурой — добавляем недостающие колонки
+    for stmt in [
+        'ALTER TABLE users ADD COLUMN avatar_photo TEXT',
+        'ALTER TABLE users ADD COLUMN last_active TEXT',
+    ]:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
