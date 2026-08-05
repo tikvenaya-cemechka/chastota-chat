@@ -1,20 +1,18 @@
-﻿import sqlite3
+import sqlite3
 import random
 import string
-from flask import Flask, render_template_string
-from flask_socketio import SocketIO, emit
+import time
+import secrets
+from flask import Flask, render_template_string, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'friends-chat-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=20_000_000)
-
 DB_PATH = 'chastota.db'
+ONLINE_SECONDS = 12 # если человек делал запрос за последние N секунд — считаем "в сети"
+TYPING_SECONDS = 3
 
-# Юзернеймы "первых разработчиков" — впиши сюда свой и друзей, когда будете готовы.
-# Пример: FOUNDER_USERNAMES = ["oleg", "alina", "alexey"]
-FOUNDER_USERNAMES = []
+FOUNDER_USERNAMES = [] # впиши сюда свой юзернейм и юзернеймы друзей, когда будете готовы
 
 
 def get_db():
@@ -27,50 +25,54 @@ def init_db():
     conn = get_db()
     conn.execute('''CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
-        name TEXT,
-        surname TEXT,
-        password_hash TEXT,
-        bio TEXT,
-        avatar TEXT DEFAULT '😀',
-        avatar_photo TEXT
+        name TEXT, surname TEXT, password_hash TEXT, bio TEXT,
+        avatar TEXT DEFAULT '😀', avatar_photo TEXT, last_active TEXT
     )''')
     conn.execute('''CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        from_user TEXT,
-        to_user TEXT,
-        text TEXT,
-        time TEXT
+        from_user TEXT, to_user TEXT, text TEXT, time TEXT, read INTEGER DEFAULT 0
     )''')
     conn.execute('''CREATE TABLE IF NOT EXISTS aliases (
-        owner TEXT,
-        contact TEXT,
-        alias TEXT,
-        PRIMARY KEY (owner, contact)
+        owner TEXT, contact TEXT, alias TEXT, PRIMARY KEY (owner, contact)
     )''')
-    # На случай если базa уже существует со старой структурой — добавляем колонку, если её нет
-    try:
-        conn.execute('ALTER TABLE users ADD COLUMN avatar_photo TEXT')
-    except sqlite3.OperationalError:
-        pass
+    conn.execute('''CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY, username TEXT
+    )''')
     conn.commit()
     conn.close()
 
 
 init_db()
 
-# pending registrations awaiting captcha, keyed by socket id
-pending = {}
+pending_regs = {} # reg_id -> {name, surname, username, password, code, expires}
+last_typing = {} # (from_user, to_user) -> timestamp
 
 
-def conv_key(a, b):
-    return tuple(sorted([a, b]))
-
+# ---------- helpers ----------
 
 def get_user(username):
     conn = get_db()
-    row = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    row = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def touch_active(username):
+    conn = get_db()
+    conn.execute('UPDATE users SET last_active=? WHERE username=?', (datetime.now().isoformat(), username))
+    conn.commit()
+    conn.close()
+
+
+def is_official(username):
+    return username.lower() in [f.lower() for f in FOUNDER_USERNAMES]
+
+
+def get_status(u):
+    if not u.get('last_active'):
+        return {'online': False, 'last_active': None}
+    delta = (datetime.now() - datetime.fromisoformat(u['last_active'])).total_seconds()
+    return {'online': delta < ONLINE_SECONDS, 'last_active': u['last_active']}
 
 
 def get_alias(owner, contact):
@@ -80,39 +82,291 @@ def get_alias(owner, contact):
     return row['alias'] if row else None
 
 
+def public_user(u, viewer=None):
+    status = get_status(u)
+    name = u['name']
+    if viewer:
+        alias = get_alias(viewer, u['username'])
+        if alias:
+            name = alias
+    return {
+        'username': u['username'], 'name': name, 'avatar': u['avatar'],
+        'avatar_photo': u.get('avatar_photo'), 'bio': u.get('bio') or '',
+        'official': is_official(u['username']),
+        'online': status['online'], 'last_active': status['last_active']
+    }
+
+
 def get_contacts(username):
     conn = get_db()
     rows = conn.execute('''
-        SELECT DISTINCT CASE WHEN from_user = ? THEN to_user ELSE from_user END AS other
-        FROM messages WHERE from_user = ? OR to_user = ?
+        SELECT DISTINCT CASE WHEN from_user=? THEN to_user ELSE from_user END AS other
+        FROM messages WHERE from_user=? OR to_user=?
     ''', (username, username, username)).fetchall()
     conn.close()
     contacts = []
     for r in rows:
         u = get_user(r['other'])
         if u:
-            alias = get_alias(username, u['username'])
-            contacts.append({
-                'username': u['username'],
-                'name': alias if alias else u['name'],
-                'avatar': u['avatar'],
-                'avatar_photo': u.get('avatar_photo'),
-                'official': is_official(u['username'])
-            })
+            contacts.append(public_user(u, viewer=username))
     return contacts
 
 
-def is_official(username):
-    return username.lower() in [f.lower() for f in FOUNDER_USERNAMES]
+def session_user(token):
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute('SELECT username FROM sessions WHERE token=?', (token,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return get_user(row['username'])
 
 
-def public_user(u):
-    return {
-        'username': u['username'], 'name': u['name'], 'avatar': u['avatar'],
-        'avatar_photo': u.get('avatar_photo'),
-        'bio': u.get('bio') or '', 'official': is_official(u['username'])
+def require_auth():
+    token = request.args.get('token') or (request.json or {}).get('token')
+    u = session_user(token)
+    return u
+
+
+# ---------- API ----------
+
+@app.route('/api/register', methods=['POST'])
+def api_register():
+    data = request.json or {}
+    username = data.get('username', '').strip().lstrip('@')
+    name = data.get('name', '').strip()
+    surname = data.get('surname', '').strip()
+    password = data.get('password', '')
+    if not username or not name or not password:
+        return jsonify({'error': 'Заполни имя, юзернейм и пароль'}), 400
+    if get_user(username):
+        return jsonify({'error': 'Этот юзернейм уже занят'}), 400
+    code = ''.join(random.choices(string.digits, k=5))
+    reg_id = secrets.token_hex(8)
+    pending_regs[reg_id] = {
+        'username': username, 'name': name, 'surname': surname,
+        'password': password, 'code': code, 'expires': time.time() + 300
     }
+    return jsonify({'reg_id': reg_id, 'code': code})
 
+
+@app.route('/api/confirm_captcha', methods=['POST'])
+def api_confirm_captcha():
+    data = request.json or {}
+    reg_id = data.get('reg_id')
+    entered = data.get('code', '').strip()
+    reg = pending_regs.get(reg_id)
+    if not reg or reg['expires'] < time.time():
+        return jsonify({'error': 'Сессия истекла, попробуй заново'}), 400
+    if entered != reg['code']:
+        return jsonify({'error': 'Код неверный, попробуй ещё раз'}), 400
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO users (username, name, surname, password_hash, bio, avatar, last_active) VALUES (?,?,?,?,?,?,?)',
+        (reg['username'], reg['name'], reg['surname'], generate_password_hash(reg['password']),
+         '', '😀', datetime.now().isoformat())
+    )
+    token = secrets.token_hex(24)
+    conn.execute('INSERT INTO sessions (token, username) VALUES (?,?)', (token, reg['username']))
+    conn.commit()
+    conn.close()
+    del pending_regs[reg_id]
+    u = get_user(reg['username'])
+    return jsonify({'token': token, 'user': public_user(u), 'contacts': []})
+
+
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    data = request.json or {}
+    username = data.get('username', '').strip().lstrip('@')
+    password = data.get('password', '')
+    u = get_user(username)
+    if not u or not check_password_hash(u['password_hash'], password):
+        return jsonify({'error': 'Неверный юзернейм или пароль'}), 400
+    token = secrets.token_hex(24)
+    conn = get_db()
+    conn.execute('INSERT INTO sessions (token, username) VALUES (?,?)', (token, username))
+    conn.commit()
+    conn.close()
+    touch_active(username)
+    return jsonify({'token': token, 'user': public_user(u), 'contacts': get_contacts(username)})
+
+
+@app.route('/api/me')
+def api_me():
+    u = require_auth()
+    if not u:
+        return jsonify({'error': 'Сессия не найдена'}), 401
+    touch_active(u['username'])
+    return jsonify({'user': public_user(u), 'contacts': get_contacts(u['username'])})
+
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    data = request.json or {}
+    token = data.get('token')
+    conn = get_db()
+    conn.execute('DELETE FROM sessions WHERE token=?', (token,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/find_user')
+def api_find_user():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    username = request.args.get('username', '').strip().lstrip('@')
+    u = get_user(username)
+    if not u:
+        return jsonify({'found': False})
+    return jsonify({'found': True, 'user': public_user(u, viewer=me['username'])})
+
+
+@app.route('/api/send_message', methods=['POST'])
+def api_send_message():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    to_user = data.get('to', '').strip()
+    text = data.get('text', '')
+    if not get_user(to_user) or not text.strip():
+        return jsonify({'error': 'bad request'}), 400
+    time_str = datetime.now().strftime('%H:%M')
+    conn = get_db()
+    cur = conn.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
+                        (me['username'], to_user, text, time_str))
+    conn.commit()
+    msg_id = cur.lastrowid
+    conn.close()
+    touch_active(me['username'])
+    return jsonify({'id': msg_id, 'from_user': me['username'], 'to_user': to_user, 'text': text,
+                     'time': time_str, 'read': 0})
+
+
+@app.route('/api/typing', methods=['POST'])
+def api_typing():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    to_user = data.get('to', '')
+    last_typing[(me['username'], to_user)] = time.time()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/sync')
+def api_sync():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    touch_active(me['username'])
+    since_id = int(request.args.get('since_id', 0))
+    with_user = request.args.get('with', '')
+
+    conn = get_db()
+    rows = conn.execute('''
+        SELECT id, from_user, to_user, text, time, read FROM messages
+        WHERE id > ? AND (from_user=? OR to_user=?) ORDER BY id ASC
+    ''', (since_id, me['username'], me['username'])).fetchall()
+    new_messages = [dict(r) for r in rows]
+
+    read_up_to_id = 0
+    typing = False
+    if with_user:
+        conn.execute('UPDATE messages SET read=1 WHERE from_user=? AND to_user=? AND read=0',
+                     (with_user, me['username']))
+        conn.commit()
+        row = conn.execute('SELECT MAX(id) AS m FROM messages WHERE from_user=? AND to_user=? AND read=1',
+                            (me['username'], with_user)).fetchone()
+        read_up_to_id = row['m'] or 0
+        ts = last_typing.get((with_user, me['username']))
+        typing = bool(ts and time.time() - ts < TYPING_SECONDS)
+    conn.close()
+
+    max_id = since_id
+    if new_messages:
+        max_id = max(m['id'] for m in new_messages)
+
+    return jsonify({
+        'new_messages': new_messages,
+        'contacts': get_contacts(me['username']),
+        'read_up_to_id': read_up_to_id,
+        'typing': typing,
+        'max_id': max_id
+    })
+
+
+@app.route('/api/open_chat')
+def api_open_chat():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    with_user = request.args.get('with', '')
+    conn = get_db()
+    rows = conn.execute('''
+        SELECT id, from_user, to_user, text, time, read FROM messages
+        WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?)
+        ORDER BY id ASC
+    ''', (me['username'], with_user, with_user, me['username'])).fetchall()
+    conn.execute('UPDATE messages SET read=1 WHERE from_user=? AND to_user=? AND read=0',
+                 (with_user, me['username']))
+    conn.commit()
+    conn.close()
+    max_id = max([r['id'] for r in rows], default=0)
+    return jsonify({'messages': [dict(r) for r in rows], 'max_id': max_id})
+
+
+@app.route('/api/update_bio', methods=['POST'])
+def api_update_bio():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    bio = (request.json or {}).get('bio', '')
+    conn = get_db()
+    conn.execute('UPDATE users SET bio=? WHERE username=?', (bio, me['username']))
+    conn.commit()
+    conn.close()
+    return jsonify({'bio': bio})
+
+
+@app.route('/api/update_avatar', methods=['POST'])
+def api_update_avatar():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    avatar_photo = (request.json or {}).get('avatar_photo')
+    conn = get_db()
+    conn.execute('UPDATE users SET avatar_photo=? WHERE username=?', (avatar_photo, me['username']))
+    conn.commit()
+    conn.close()
+    return jsonify({'avatar_photo': avatar_photo})
+
+
+@app.route('/api/set_alias', methods=['POST'])
+def api_set_alias():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    contact = data.get('contact')
+    alias = data.get('alias', '').strip()
+    conn = get_db()
+    if alias:
+        conn.execute('INSERT OR REPLACE INTO aliases (owner, contact, alias) VALUES (?,?,?)',
+                     (me['username'], contact, alias))
+    else:
+        conn.execute('DELETE FROM aliases WHERE owner=? AND contact=?', (me['username'], contact))
+    conn.commit()
+    conn.close()
+    u = get_user(contact)
+    return jsonify({'contact': contact, 'name': alias if alias else (u['name'] if u else contact)})
+
+
+# ---------- страница ----------
 
 PAGE = """
 <!DOCTYPE html>
@@ -120,7 +374,7 @@ PAGE = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Частота — свой канал связи</title>
+<title>Частота</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -141,7 +395,7 @@ PAGE = """
   .center { align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; }
   .logo { font-family: 'Fraunces', serif; font-weight: 700; font-size: 40px; letter-spacing: -0.02em; }
   .logo .dot { color: var(--accent); }
-  .tagline { font-family: 'IBM Plex Mono', monospace; color: var(--text-dim); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; margin-top: -10px; }
+  .tagline { font-family: 'IBM Plex Mono', monospace; color: var(--text-dim); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 2px; }
   input {
     background: var(--panel); border: 1px solid var(--border); color: var(--text);
     font-family: 'IBM Plex Mono', monospace; font-size: 15px; padding: 12px 16px;
@@ -155,10 +409,7 @@ PAGE = """
   button.primary:hover { opacity: 0.9; }
   .link-btn { background: none; border: none; color: var(--signal); cursor: pointer; font-size: 13.5px; text-decoration: underline; }
   .error-msg { color: var(--danger); font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; min-height: 16px; }
-  .captcha-code {
-    font-family: 'IBM Plex Mono', monospace; font-size: 34px; letter-spacing: 10px;
-    background: var(--panel-raised); padding: 14px 24px; border-radius: 12px; color: var(--accent);
-  }
+  .captcha-code { font-family: 'IBM Plex Mono', monospace; font-size: 34px; letter-spacing: 10px; background: var(--panel-raised); padding: 14px 24px; border-radius: 12px; color: var(--accent); }
 
   header { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
   .brand { font-family: 'Fraunces', serif; font-weight: 700; font-size: 19px; }
@@ -182,14 +433,20 @@ PAGE = """
   .contact-name { font-weight: 600; font-size: 14.5px; display: inline-flex; align-items: center; gap: 4px; }
   .official-badge { display: inline-flex; width: 15px; height: 15px; flex-shrink: 0; }
   .contact-username { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--text-dim); }
+  .contact-status { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; margin-top: 1px; }
+  .status-online { color: #3ba7f5; }
+  .status-offline { color: var(--text-dim); }
   .empty-hint { padding: 20px; color: var(--text-dim); font-size: 13.5px; text-align: center; }
 
   .back-btn { background: none; border: none; color: var(--text); font-size: 20px; cursor: pointer; padding: 0 8px 0 0; }
-  .chat-header-info { display: flex; align-items: center; gap: 10px; }
+  .chat-header-info { display: flex; align-items: center; gap: 10px; flex: 1; }
+  #chatTyping { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--accent); min-height: 14px; }
   #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 4px; }
   .msg { max-width: 78%; animation: rise 0.18s ease-out; padding: 2px 0; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   .msg .meta { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+  .ticks { margin-left: 5px; color: var(--text-dim); }
+  .ticks.read { color: #3ba7f5; }
   .msg .bubble { background: var(--panel-raised); border-radius: 4px 12px 12px 12px; padding: 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
   .msg.own { align-self: flex-end; }
   .msg.own .meta { text-align: right; }
@@ -285,6 +542,7 @@ PAGE = """
       <div>
         <div class="brand" id="chatName" style="font-size:16px;"></div>
         <div class="contact-username" id="chatUsername"></div>
+        <div id="chatTyping"></div>
       </div>
     </div>
     <button class="icon-btn" id="renameBtn">✏️</button>
@@ -296,21 +554,22 @@ PAGE = """
   </div>
 </div>
 
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-  const socket = io();
   let me = null;
+  let token = localStorage.getItem('chastota_token') || null;
   let currentContact = null;
   let contactsCache = [];
+  let sinceId = 0;
+  let pendingRegId = null;
+  let pollTimer = null;
 
-  // --- Тема (тёмная/светлая) ---
+  // --- Тема ---
   function applyTheme(theme) {
     document.body.classList.toggle('light', theme === 'light');
     const btn = document.getElementById('themeBtn');
     if (btn) btn.textContent = theme === 'light' ? '☀️' : '🌙';
   }
-  const savedTheme = localStorage.getItem('chastota_theme') || 'dark';
-  applyTheme(savedTheme);
+  applyTheme(localStorage.getItem('chastota_theme') || 'dark');
   document.getElementById('themeBtn').addEventListener('click', () => {
     const next = document.body.classList.contains('light') ? 'dark' : 'light';
     applyTheme(next);
@@ -332,50 +591,92 @@ PAGE = """
     if (user && user.avatar_photo) return '<img src="' + user.avatar_photo + '">';
     return (user && user.avatar) ? user.avatar : '😀';
   }
+  function statusInfo(user) {
+    if (user.online) return { text: 'В сети', cls: 'status-online' };
+    if (!user.last_active) return { text: '', cls: '' };
+    const days = (Date.now() - new Date(user.last_active).getTime()) / 86400000;
+    return days < 30 ? { text: 'был(а) недавно', cls: 'status-offline' } : { text: 'был(а) давно', cls: 'status-offline' };
+  }
 
-  // --- Register ---
-  document.getElementById('regBtn').addEventListener('click', () => {
+  async function api(path, opts) {
+    opts = opts || {};
+    opts.headers = { 'Content-Type': 'application/json' };
+    if (opts.body) opts.body = JSON.stringify(Object.assign({ token }, opts.body));
+    const sep = path.includes('?') ? '&' : '?';
+    const url = opts.body ? path : path + sep + 'token=' + encodeURIComponent(token || '');
+    const res = await fetch(url, opts);
+    return { ok: res.ok, data: await res.json() };
+  }
+
+  // --- Автовход при загрузке ---
+  window.addEventListener('load', async () => {
+    if (token) {
+      const r = await api('/api/me');
+      if (r.ok) {
+        me = r.data.user; contactsCache = r.data.contacts;
+        renderContacts(contactsCache);
+        showScreen('dashScreen');
+        startPolling();
+        return;
+      } else {
+        localStorage.removeItem('chastota_token'); token = null;
+      }
+    }
+    showScreen('registerScreen');
+  });
+
+  // --- Регистрация ---
+  document.getElementById('regBtn').addEventListener('click', async () => {
     const name = document.getElementById('regName').value.trim();
     const surname = document.getElementById('regSurname').value.trim();
     const username = document.getElementById('regUsername').value.trim().replace('@', '');
     const password = document.getElementById('regPassword').value;
-    document.getElementById('regError').textContent = '';
-    if (!name || !username || !password) {
-      document.getElementById('regError').textContent = 'Заполни имя, юзернейм и пароль';
-      return;
-    }
-    socket.emit('start_register', { name, surname, username, password });
-  });
-  socket.on('register_error', d => { document.getElementById('regError').textContent = d.message; });
-
-  socket.on('show_captcha', d => {
-    document.getElementById('captchaCode').textContent = d.code;
+    const errEl = document.getElementById('regError'); errEl.textContent = '';
+    if (!name || !username || !password) { errEl.textContent = 'Заполни имя, юзернейм и пароль'; return; }
+    const r = await api('/api/register', { method: 'POST', body: { name, surname, username, password } });
+    if (!r.ok) { errEl.textContent = r.data.error; return; }
+    pendingRegId = r.data.reg_id;
+    document.getElementById('captchaCode').textContent = r.data.code;
     document.getElementById('captchaInput').value = '';
     document.getElementById('captchaError').textContent = '';
     showScreen('captchaScreen');
   });
-  document.getElementById('captchaBtn').addEventListener('click', () => {
-    socket.emit('confirm_captcha', { code: document.getElementById('captchaInput').value.trim() });
+  document.getElementById('captchaBtn').addEventListener('click', async () => {
+    const code = document.getElementById('captchaInput').value.trim();
+    const r = await api('/api/confirm_captcha', { method: 'POST', body: { reg_id: pendingRegId, code } });
+    if (!r.ok) { document.getElementById('captchaError').textContent = r.data.error; return; }
+    onAuthSuccess(r.data);
   });
-  socket.on('captcha_error', d => { document.getElementById('captchaError').textContent = d.message; });
-
   document.getElementById('toLoginBtn').addEventListener('click', () => showScreen('loginScreen'));
   document.getElementById('toRegisterBtn').addEventListener('click', () => showScreen('registerScreen'));
 
-  // --- Login ---
-  document.getElementById('loginBtn').addEventListener('click', () => {
+  // --- Вход ---
+  document.getElementById('loginBtn').addEventListener('click', async () => {
     const username = document.getElementById('loginUsername').value.trim().replace('@', '');
     const password = document.getElementById('loginPassword').value;
-    socket.emit('login', { username, password });
+    const r = await api('/api/login', { method: 'POST', body: { username, password } });
+    if (!r.ok) { document.getElementById('loginError').textContent = r.data.error; return; }
+    onAuthSuccess(r.data);
   });
-  socket.on('login_error', d => { document.getElementById('loginError').textContent = d.message; });
 
-  // --- Auth success (register or login) ---
-  socket.on('auth_success', d => {
-    me = d.user;
-    contactsCache = d.contacts;
+  function onAuthSuccess(data) {
+    token = data.token;
+    localStorage.setItem('chastota_token', token);
+    me = data.user;
+    contactsCache = data.contacts || [];
     renderContacts(contactsCache);
     showScreen('dashScreen');
+    startPolling();
+  }
+
+  document.getElementById('logoutBtn').addEventListener('click', async () => {
+    stopPolling();
+    await api('/api/logout', { method: 'POST', body: {} });
+    localStorage.removeItem('chastota_token');
+    token = null; me = null; currentContact = null; sinceId = 0;
+    document.getElementById('loginUsername').value = '';
+    document.getElementById('loginPassword').value = '';
+    showScreen('loginScreen');
   });
 
   function renderContacts(contacts) {
@@ -388,56 +689,50 @@ PAGE = """
     contacts.forEach(c => {
       const item = document.createElement('div');
       item.className = 'contact-item';
-      item.innerHTML = '<div class="avatar-box">' + avatarHtml(c) + '</div><div><div class="contact-name">' + escapeHtml(c.name) + officialBadge(c.official) + '</div><div class="contact-username">@' + escapeHtml(c.username) + '</div></div>';
+      const st = statusInfo(c);
+      item.innerHTML = '<div class="avatar-box">' + avatarHtml(c) + '</div><div><div class="contact-name">' + escapeHtml(c.name) + officialBadge(c.official) + '</div><div class="contact-username">@' + escapeHtml(c.username) + '</div><div class="contact-status ' + st.cls + '">' + st.text + '</div></div>';
       item.addEventListener('click', () => openChat(c));
       list.appendChild(item);
     });
   }
 
-  // --- Search ---
-  document.getElementById('searchBtn').addEventListener('click', () => {
+  // --- Поиск ---
+  document.getElementById('searchBtn').addEventListener('click', async () => {
     const username = document.getElementById('searchInput').value.trim().replace('@', '');
+    const errEl = document.getElementById('searchError'); errEl.textContent = '';
     if (!username) return;
-    if (username === me.username) {
-      document.getElementById('searchError').textContent = 'Это твой собственный юзернейм';
-      return;
-    }
-    socket.emit('find_user', { my_username: me.username, username });
-  });
-  socket.on('find_result', d => {
-    const errEl = document.getElementById('searchError');
-    if (d.found) { errEl.textContent = ''; openChat(d.user); }
-    else { errEl.textContent = 'Юзернейм не найден'; }
+    if (username === me.username) { errEl.textContent = 'Это твой собственный юзернейм'; return; }
+    const r = await api('/api/find_user?username=' + encodeURIComponent(username));
+    if (r.data.found) { openChat(r.data.user); } else { errEl.textContent = 'Юзернейм не найден'; }
   });
 
-  // --- Bio ---
+  // --- Профиль ---
   document.getElementById('bioBtn').addEventListener('click', () => {
     document.getElementById('bioInput').value = me.bio || '';
     document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
     showScreen('bioScreen');
   });
   document.getElementById('bioBackBtn').addEventListener('click', () => showScreen('dashScreen'));
-  document.getElementById('bioSaveBtn').addEventListener('click', () => {
+  document.getElementById('bioSaveBtn').addEventListener('click', async () => {
     const bio = document.getElementById('bioInput').value.trim();
-    socket.emit('update_bio', { username: me.username, bio });
+    const r = await api('/api/update_bio', { method: 'POST', body: { bio } });
+    me.bio = r.data.bio;
+    showScreen('dashScreen');
   });
-  socket.on('bio_updated', d => { me.bio = d.bio; showScreen('dashScreen'); });
-
   document.getElementById('avatarFileInput').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    resizeImage(file, 300).then(dataUrl => {
-      socket.emit('update_avatar', { username: me.username, avatar_photo: dataUrl });
+    resizeImage(file, 300).then(async dataUrl => {
+      const r = await api('/api/update_avatar', { method: 'POST', body: { avatar_photo: dataUrl } });
+      me.avatar_photo = r.data.avatar_photo;
+      document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
     }).catch(() => alert('Не получилось загрузить фото, попробуй другое'));
   });
-  document.getElementById('avatarRemoveBtn').addEventListener('click', () => {
-    socket.emit('update_avatar', { username: me.username, avatar_photo: null });
-  });
-  socket.on('avatar_updated', d => {
-    me.avatar_photo = d.avatar_photo;
+  document.getElementById('avatarRemoveBtn').addEventListener('click', async () => {
+    const r = await api('/api/update_avatar', { method: 'POST', body: { avatar_photo: null } });
+    me.avatar_photo = r.data.avatar_photo;
     document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
   });
-
   function resizeImage(file, maxSize) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -460,79 +755,107 @@ PAGE = """
     });
   }
 
-  // --- Logout ---
-  document.getElementById('logoutBtn').addEventListener('click', () => {
-    me = null; currentContact = null;
-    document.getElementById('loginUsername').value = '';
-    document.getElementById('loginPassword').value = '';
-    showScreen('loginScreen');
-  });
-
-  // --- Chat ---
-  function openChat(contact) {
+  // --- Чат ---
+  async function openChat(contact) {
     currentContact = contact;
-    if (!contactsCache.find(c => c.username === contact.username)) {
-      contactsCache.unshift(contact);
-    }
+    if (!contactsCache.find(c => c.username === contact.username)) contactsCache.unshift(contact);
     document.getElementById('chatAvatar').innerHTML = avatarHtml(contact);
     document.getElementById('chatName').innerHTML = escapeHtml(contact.name) + officialBadge(contact.official);
-    document.getElementById('chatUsername').textContent = '@' + contact.username;
+    renderChatStatus(contact);
+    document.getElementById('chatTyping').textContent = '';
     document.getElementById('messages').innerHTML = '';
-    socket.emit('open_chat', { my_username: me.username, with_username: contact.username });
     showScreen('chatScreen');
+    const r = await api('/api/open_chat?with=' + encodeURIComponent(contact.username));
+    r.data.messages.forEach(renderMessage);
+    sinceId = Math.max(sinceId, r.data.max_id);
   }
-  document.getElementById('backBtn').addEventListener('click', () => showScreen('dashScreen'));
+  function renderChatStatus(contact) {
+    const st = statusInfo(contact);
+    document.getElementById('chatUsername').innerHTML = '@' + escapeHtml(contact.username) +
+      (st.text ? ' · <span class="' + st.cls + '">' + st.text + '</span>' : '');
+  }
+  document.getElementById('backBtn').addEventListener('click', () => { currentContact = null; showScreen('dashScreen'); });
 
-  document.getElementById('renameBtn').addEventListener('click', () => {
+  document.getElementById('renameBtn').addEventListener('click', async () => {
     if (!currentContact) return;
     const newName = prompt('Как назвать этот контакт (видно только тебе):', currentContact.name);
     if (newName === null) return;
-    socket.emit('set_alias', { owner: me.username, contact: currentContact.username, alias: newName.trim() });
+    const r = await api('/api/set_alias', { method: 'POST', body: { contact: currentContact.username, alias: newName.trim() } });
+    currentContact.name = r.data.name;
+    document.getElementById('chatName').innerHTML = escapeHtml(currentContact.name) + officialBadge(currentContact.official);
+    const idx = contactsCache.findIndex(c => c.username === r.data.contact);
+    if (idx !== -1) contactsCache[idx].name = r.data.name;
   });
-  socket.on('alias_updated', d => {
-    if (currentContact && currentContact.username === d.contact) {
-      currentContact.name = d.name;
-      document.getElementById('chatName').innerHTML = escapeHtml(currentContact.name) + officialBadge(currentContact.official);
-    }
-    const idx = contactsCache.findIndex(c => c.username === d.contact);
-    if (idx !== -1) { contactsCache[idx].name = d.name; }
-  });
-
-  socket.on('chat_history', msgs => msgs.forEach(renderMessage));
 
   function renderMessage(msg) {
     const div = document.createElement('div');
     const isOwn = msg.from_user === me.username;
     div.className = 'msg' + (isOwn ? ' own' : '');
-    div.innerHTML = '<div class="meta">' + msg.time + '</div><div class="bubble">' + escapeHtml(msg.text) + '</div>';
+    div.dataset.id = msg.id;
+    const ticks = isOwn ? ('<span class="ticks' + (msg.read ? ' read' : '') + '">' + (msg.read ? '✓✓' : '✓') + '</span>') : '';
+    div.innerHTML = '<div class="meta">' + msg.time + ticks + '</div><div class="bubble">' + escapeHtml(msg.text) + '</div>';
     document.getElementById('messages').appendChild(div);
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
   }
-  function send() {
-    const text = document.getElementById('textInput').value.trim();
+
+  async function send() {
+    const input = document.getElementById('textInput');
+    const text = input.value.trim();
     if (!text || !currentContact) return;
-    socket.emit('send_message', { from_user: me.username, to_user: currentContact.username, text });
-    document.getElementById('textInput').value = '';
+    input.value = '';
+    const r = await api('/api/send_message', { method: 'POST', body: { to: currentContact.username, text } });
+    if (r.ok) { renderMessage(r.data); sinceId = Math.max(sinceId, r.data.id); }
   }
   document.getElementById('sendBtn').addEventListener('click', send);
   document.getElementById('textInput').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
-  socket.on('new_message', data => {
-    if (currentContact && (data.from_user === currentContact.username || data.from_user === me.username) &&
-        (data.to_user === currentContact.username || data.to_user === me.username)) {
-      renderMessage(data);
+  let lastTypingSent = 0;
+  document.getElementById('textInput').addEventListener('input', () => {
+    if (!currentContact) return;
+    const now = Date.now();
+    if (now - lastTypingSent > 1500) {
+      lastTypingSent = now;
+      api('/api/typing', { method: 'POST', body: { to: currentContact.username } });
     }
   });
 
-  // Живое обновление списка переписок — без перезахода
-  socket.on('contact_update', contact => {
-    const idx = contactsCache.findIndex(c => c.username === contact.username);
-    if (idx === -1) contactsCache.unshift(contact);
-    else contactsCache[idx] = contact;
-    if (document.getElementById('dashScreen').classList.contains('active')) {
-      renderContacts(contactsCache);
+  // --- Опрос сервера (замена WebSocket) ---
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(pollOnce, 2500);
+    pollOnce();
+  }
+  function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
+
+  async function pollOnce() {
+    if (!token) return;
+    const withParam = currentContact ? '&with=' + encodeURIComponent(currentContact.username) : '';
+    const r = await api('/api/sync?since_id=' + sinceId + withParam);
+    if (!r.ok) return;
+    contactsCache = r.data.contacts;
+    if (document.getElementById('dashScreen').classList.contains('active')) renderContacts(contactsCache);
+
+    r.data.new_messages.forEach(m => {
+      if (currentContact && document.getElementById('chatScreen').classList.contains('active') &&
+          ((m.from_user === currentContact.username && m.to_user === me.username) ||
+           (m.from_user === me.username && m.to_user === currentContact.username))) {
+        if (!document.querySelector('.msg[data-id="' + m.id + '"]')) renderMessage(m);
+      }
+    });
+    if (r.data.max_id > sinceId) sinceId = r.data.max_id;
+
+    if (currentContact) {
+      document.querySelectorAll('#messages .msg.own').forEach(el => {
+        if (parseInt(el.dataset.id) <= r.data.read_up_to_id) {
+          const t = el.querySelector('.ticks');
+          if (t) { t.textContent = '✓✓'; t.classList.add('read'); }
+        }
+      });
+      document.getElementById('chatTyping').textContent = r.data.typing ? 'печатает...' : '';
+      const updated = contactsCache.find(c => c.username === currentContact.username);
+      if (updated) { currentContact.online = updated.online; currentContact.last_active = updated.last_active; renderChatStatus(currentContact); }
     }
-  });
+  }
 </script>
 </body>
 </html>
@@ -544,162 +867,6 @@ def index():
     return render_template_string(PAGE)
 
 
-@socketio.on('start_register')
-def handle_start_register(data):
-    from flask import request
-    username = data.get('username', '').strip().lstrip('@')
-    name = data.get('name', '').strip()
-    surname = data.get('surname', '').strip()
-    password = data.get('password', '')
-
-    if not username or not name or not password:
-        emit('register_error', {'message': 'Заполни имя, юзернейм и пароль'})
-        return
-    if get_user(username):
-        emit('register_error', {'message': 'Этот юзернейм уже занят'})
-        return
-
-    code = ''.join(random.choices(string.digits, k=5))
-    pending[request.sid] = {
-        'username': username, 'name': name, 'surname': surname,
-        'password': password, 'code': code
-    }
-    emit('show_captcha', {'code': code})
-
-
-@socketio.on('confirm_captcha')
-def handle_confirm_captcha(data):
-    from flask import request
-    entered = data.get('code', '').strip()
-    reg = pending.get(request.sid)
-    if not reg:
-        emit('register_error', {'message': 'Сессия истекла, попробуй заново'})
-        return
-    if entered != reg['code']:
-        emit('captcha_error', {'message': 'Код неверный, попробуй ещё раз'})
-        return
-
-    conn = get_db()
-    conn.execute(
-        'INSERT INTO users (username, name, surname, password_hash, bio, avatar) VALUES (?,?,?,?,?,?)',
-        (reg['username'], reg['name'], reg['surname'], generate_password_hash(reg['password']), '', '😀')
-    )
-    conn.commit()
-    conn.close()
-    del pending[request.sid]
-
-    u = get_user(reg['username'])
-    from flask_socketio import join_room
-    join_room(u['username'])
-    emit('auth_success', {'user': public_user(u), 'contacts': []})
-
-
-@socketio.on('login')
-def handle_login(data):
-    username = data.get('username', '').strip().lstrip('@')
-    password = data.get('password', '')
-    u = get_user(username)
-    if not u or not check_password_hash(u['password_hash'], password):
-        emit('login_error', {'message': 'Неверный юзернейм или пароль'})
-        return
-    from flask_socketio import join_room
-    join_room(u['username'])
-    emit('auth_success', {'user': public_user(u), 'contacts': get_contacts(username)})
-
-
-@socketio.on('find_user')
-def handle_find_user(data):
-    my_username = data.get('my_username', '')
-    username = data.get('username', '').strip().lstrip('@')
-    u = get_user(username)
-    if u:
-        pu = public_user(u)
-        alias = get_alias(my_username, username)
-        if alias:
-            pu['name'] = alias
-        emit('find_result', {'found': True, 'user': pu})
-    else:
-        emit('find_result', {'found': False})
-
-
-@socketio.on('open_chat')
-def handle_open_chat(data):
-    my_username = data.get('my_username')
-    with_username = data.get('with_username')
-    conn = get_db()
-    rows = conn.execute('''
-        SELECT from_user, to_user, text, time FROM messages
-        WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?)
-        ORDER BY id ASC
-    ''', (my_username, with_username, with_username, my_username)).fetchall()
-    conn.close()
-    emit('chat_history', [dict(r) for r in rows])
-
-
-@socketio.on('send_message')
-def handle_send_message(data):
-    from_user = data.get('from_user')
-    to_user = data.get('to_user')
-    text = data.get('text', '')
-    recipient = get_user(to_user)
-    sender = get_user(from_user)
-    if not recipient or not sender:
-        return
-    time_str = datetime.now().strftime('%H:%M')
-    conn = get_db()
-    conn.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
-                 (from_user, to_user, text, time_str))
-    conn.commit()
-    conn.close()
-    msg = {'from_user': from_user, 'to_user': to_user, 'text': text, 'time': time_str}
-    emit('new_message', msg, room=from_user)
-    emit('new_message', msg, room=to_user)
-    # чтобы новая переписка сразу появилась в списке у обоих, без перезахода
-    emit('contact_update', public_user(recipient), room=from_user)
-    emit('contact_update', public_user(sender), room=to_user)
-
-
-@socketio.on('update_bio')
-def handle_update_bio(data):
-    username = data.get('username')
-    bio = data.get('bio', '')
-    conn = get_db()
-    conn.execute('UPDATE users SET bio=? WHERE username=?', (bio, username))
-    conn.commit()
-    conn.close()
-    emit('bio_updated', {'bio': bio})
-
-
-@socketio.on('update_avatar')
-def handle_update_avatar(data):
-    username = data.get('username')
-    avatar_photo = data.get('avatar_photo') # base64 data-URL или None, если убираем фото
-    conn = get_db()
-    conn.execute('UPDATE users SET avatar_photo=? WHERE username=?', (avatar_photo, username))
-    conn.commit()
-    conn.close()
-    emit('avatar_updated', {'avatar_photo': avatar_photo})
-
-
-@socketio.on('set_alias')
-def handle_set_alias(data):
-    owner = data.get('owner')
-    contact = data.get('contact')
-    alias = data.get('alias', '').strip()
-    conn = get_db()
-    if alias:
-        conn.execute('INSERT OR REPLACE INTO aliases (owner, contact, alias) VALUES (?,?,?)',
-                     (owner, contact, alias))
-    else:
-        conn.execute('DELETE FROM aliases WHERE owner=? AND contact=?', (owner, contact))
-    conn.commit()
-    conn.close()
-    u = get_user(contact)
-    display_name = alias if alias else (u['name'] if u else contact)
-    emit('alias_updated', {'contact': contact, 'name': display_name})
-
-
 if __name__ == '__main__':
     print("Чат запущен! Открой в браузере: http://localhost:5000")
-    print("Друзья в той же сети (wifi) могут зайти по твоему локальному IP")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
