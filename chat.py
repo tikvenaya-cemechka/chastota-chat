@@ -2012,4 +2012,1255 @@ PAGE = """
         const preset = WALLPAPER_PRESETS.find(p => p.id === w.id);
         if (preset) messagesEl.style.background = preset.css;
       } else if (w.type === 'custom') {
-  
+        messagesEl.style.backgroundImage = 'url(' + w.data + ')';
+        messagesEl.style.backgroundSize = 'cover';
+        messagesEl.style.backgroundPosition = 'center';
+      }
+    } catch (e) {}
+  }
+  function openWallpaperMenu() {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+    const title = document.createElement('div');
+    title.style.cssText = 'padding:10px 22px; color:var(--text-dim); font-size:13px;';
+    title.textContent = 'Выбери обои для этого чата';
+    menu.appendChild(title);
+    const swatchRow = document.createElement('div');
+    swatchRow.style.cssText = 'display:flex; gap:12px; padding:6px 22px 16px; flex-wrap:wrap;';
+    WALLPAPER_PRESETS.forEach(p => {
+      const sw = document.createElement('div');
+      sw.className = 'wallpaper-swatch';
+      sw.style.background = p.css || '#333';
+      sw.title = p.label;
+      sw.addEventListener('click', () => {
+        localStorage.setItem(wallpaperKey(currentContact), JSON.stringify({ type: 'preset', id: p.id }));
+        applyWallpaper(currentContact);
+        closeMessageMenu();
+      });
+      swatchRow.appendChild(sw);
+    });
+    menu.appendChild(swatchRow);
+    const galleryBtn = document.createElement('button');
+    galleryBtn.textContent = 'Своё фото из галереи';
+    galleryBtn.addEventListener('click', () => { document.getElementById('wallpaperFileInput').click(); });
+    menu.appendChild(galleryBtn);
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Сбросить обои';
+    resetBtn.addEventListener('click', () => {
+      localStorage.removeItem(wallpaperKey(currentContact));
+      applyWallpaper(currentContact);
+      closeMessageMenu();
+    });
+    menu.appendChild(resetBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('wallpaperFileInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file || !currentContact) return;
+    resizeImage(file, 1600).then(dataUrl => {
+      localStorage.setItem(wallpaperKey(currentContact), JSON.stringify({ type: 'custom', data: dataUrl }));
+      applyWallpaper(currentContact);
+    }).catch(() => alert('Не получилось загрузить фото'));
+  });
+
+  // --- Поиск по переписке ---
+  let searchMatches = [];
+  let searchMatchIndex = -1;
+  function openChatSearch() {
+    document.getElementById('chatSearchBar').style.display = 'flex';
+    document.getElementById('chatSearchInput').value = '';
+    document.getElementById('chatSearchInput').focus();
+  }
+  function closeChatSearch() {
+    document.getElementById('chatSearchBar').style.display = 'none';
+    document.getElementById('chatSearchNav').style.display = 'none';
+    document.querySelectorAll('.msg.search-highlight').forEach(el => el.classList.remove('search-highlight'));
+    searchMatches = []; searchMatchIndex = -1;
+  }
+  document.getElementById('chatSearchCloseBtn').addEventListener('click', closeChatSearch);
+  document.getElementById('chatSearchInput').addEventListener('input', () => {
+    const q = document.getElementById('chatSearchInput').value.trim().toLowerCase();
+    document.querySelectorAll('.msg.search-highlight').forEach(el => el.classList.remove('search-highlight'));
+    if (!q) { searchMatches = []; document.getElementById('chatSearchNav').style.display = 'none'; return; }
+    searchMatches = Object.values(messagesById)
+      .filter(m => !m.deleted && m.text && m.text.toLowerCase().includes(q))
+      .sort((a, b) => a.id - b.id);
+    searchMatchIndex = searchMatches.length ? searchMatches.length - 1 : -1;
+    document.getElementById('chatSearchNav').style.display = searchMatches.length ? 'flex' : 'none';
+    if (searchMatches.length) jumpToSearchMatch();
+    else document.getElementById('searchMatchCount').textContent = '0';
+  });
+  function jumpToSearchMatch() {
+    document.querySelectorAll('.msg.search-highlight').forEach(el => el.classList.remove('search-highlight'));
+    if (searchMatchIndex < 0 || searchMatchIndex >= searchMatches.length) return;
+    const m = searchMatches[searchMatchIndex];
+    const div = document.querySelector('.msg[data-id="' + m.id + '"]');
+    if (div) { div.scrollIntoView({ behavior: 'smooth', block: 'center' }); div.classList.add('search-highlight'); }
+    document.getElementById('searchMatchCount').textContent = (searchMatchIndex + 1) + '/' + searchMatches.length;
+  }
+  document.getElementById('searchPrevBtn').addEventListener('click', () => {
+    if (!searchMatches.length) return;
+    searchMatchIndex = (searchMatchIndex - 1 + searchMatches.length) % searchMatches.length;
+    jumpToSearchMatch();
+  });
+  document.getElementById('searchNextBtn').addEventListener('click', () => {
+    if (!searchMatches.length) return;
+    searchMatchIndex = (searchMatchIndex + 1) % searchMatches.length;
+    jumpToSearchMatch();
+  });
+
+  // --- Очистить историю ---
+  function openClearHistoryMenu() {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+    const checkRow = document.createElement('label');
+    checkRow.className = 'menu-check-row';
+    const check = document.createElement('input'); check.type = 'checkbox';
+    checkRow.appendChild(check);
+    const checkLabel = document.createElement('span'); checkLabel.textContent = 'Очистить у всех';
+    checkRow.appendChild(checkLabel);
+    menu.appendChild(checkRow);
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'danger';
+    confirmBtn.textContent = 'Очистить историю';
+    confirmBtn.addEventListener('click', async () => {
+      const everyone = check.checked;
+      closeMessageMenu();
+      const r = await api('/api/clear_history', { method: 'POST', body: { contact: currentContact.username, everyone } });
+      if (r.ok) { document.getElementById('messages').innerHTML = ''; messagesById = {}; lastRenderedDateKey = ''; }
+      else alert('Не получилось очистить историю');
+    });
+    menu.appendChild(confirmBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  // --- Секретный чат: приглашение / настройки ---
+  function openSecretChatMenu() {
+    closeMessageMenu();
+    if (!currentContact.is_secret) { showSecretInviteBanner(); return; }
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.textContent = 'Название и аватар для маскировки';
+    renameBtn.addEventListener('click', async () => {
+      closeMessageMenu();
+      const name = prompt('Как назвать этот чат для маскировки (видно только тебе):', currentContact.name);
+      if (name === null) return;
+      const avatar = prompt('Эмодзи-аватарка для маскировки (например 📷 или 🎮):', currentContact.avatar || '😀');
+      if (avatar === null) return;
+      const r = await api('/api/set_secret_chat', { method: 'POST', body: {
+        contact: currentContact.username, disguise_name: name || null, disguise_avatar: avatar || null } });
+      if (r.ok) { openChat(await refetchContact(currentContact.username)); }
+    });
+    menu.appendChild(renameBtn);
+
+    const passBtn = document.createElement('button');
+    passBtn.textContent = currentContact.has_password ? 'Изменить пароль' : 'Установить пароль';
+    passBtn.addEventListener('click', async () => {
+      closeMessageMenu();
+      const pass = prompt('Новый пароль для этого чата (оставь пустым, чтобы убрать пароль):');
+      if (pass === null) return;
+      await api('/api/set_secret_chat', { method: 'POST', body: { contact: currentContact.username, password: pass } });
+      currentContact.has_password = !!pass;
+    });
+    menu.appendChild(passBtn);
+
+    const offBtn = document.createElement('button');
+    offBtn.className = 'danger';
+    offBtn.textContent = 'Отключить секретный режим';
+    offBtn.addEventListener('click', async () => {
+      closeMessageMenu();
+      const r = await api('/api/unset_secret_chat', { method: 'POST', body: { contact: currentContact.username } });
+      if (r.ok) { openChat(await refetchContact(currentContact.username)); }
+    });
+    menu.appendChild(offBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  async function refetchContact(username) {
+    const r = await api('/api/find_user?username=' + encodeURIComponent(username));
+    return r.data.found ? r.data.user : currentContact;
+  }
+
+  function showSecretInviteBanner() {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+    const text = document.createElement('div');
+    text.style.cssText = 'padding:16px 22px; font-size:14px; line-height:1.7;';
+    text.innerHTML = 'Вы пригласили <b>' + escapeHtml(currentContact.name) + '</b> в секретный чат.<br><br>' +
+      'Секретные чаты — это:<br>🔒 Оконечное шифрование<br>🔒 Никаких следов на серверах<br>' +
+      '🔒 Удаление по таймеру<br>🔒 Запрет пересылки третьим лицам<br><br>' +
+      '<span style="color:var(--text-dim); font-size:12px;">⚠ Пока это черновая версия: настоящее шифрование ещё не подключено (сообщения хранятся на сервере как обычно), скриншоты браузер тоже никак не блокирует. Таймер и запрет пересылки уже работают по-настоящему.</span>';
+    menu.appendChild(text);
+    const createBtn = document.createElement('button');
+    createBtn.textContent = 'Создать секретный чат';
+    createBtn.addEventListener('click', async () => {
+      closeMessageMenu();
+      const r = await api('/api/set_secret_chat', { method: 'POST', body: { contact: currentContact.username } });
+      if (r.ok) { openChat(await refetchContact(currentContact.username)); }
+    });
+    menu.appendChild(createBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  // --- Кнопка ⋮ в шапке чата ---
+  document.getElementById('chatMenuBtn').addEventListener('click', () => {
+    if (!currentContact) return;
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+
+    const searchBtn = document.createElement('button');
+    searchBtn.textContent = 'Поиск';
+    searchBtn.addEventListener('click', () => { closeMessageMenu(); openChatSearch(); });
+    menu.appendChild(searchBtn);
+
+    const wallBtn = document.createElement('button');
+    wallBtn.textContent = 'Изменить обои';
+    wallBtn.addEventListener('click', () => { closeMessageMenu(); openWallpaperMenu(); });
+    menu.appendChild(wallBtn);
+
+    const secretBtn = document.createElement('button');
+    secretBtn.textContent = currentContact.is_secret ? 'Настройки секретного чата' : 'Секретный чат';
+    secretBtn.addEventListener('click', () => { closeMessageMenu(); openSecretChatMenu(); });
+    menu.appendChild(secretBtn);
+
+    const clearBtn = document.createElement('button');
+    clearBtn.textContent = 'Очистить историю';
+    clearBtn.addEventListener('click', () => { closeMessageMenu(); openClearHistoryMenu(); });
+    menu.appendChild(clearBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.textContent = 'Удалить чат';
+    delBtn.addEventListener('click', () => { closeMessageMenu(); openDeleteChatMenu(currentContact); });
+    menu.appendChild(delBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  });
+
+  function renderChatStatus(contact) {
+    const st = statusInfo(contact);
+    document.getElementById('chatUsername').innerHTML = '@' + escapeHtml(contact.username) +
+      (st.text ? ' · <span class="' + st.cls + '">' + st.text + '</span>' : '');
+  }
+  document.getElementById('backBtn').addEventListener('click', () => { saveDraftForCurrent(); currentContact = null; showScreen('dashScreen'); });
+
+  // ЗАДЕЛ НА БУДУЩЕЕ: здесь при отправке (send/sendAttachment) для is_secret-чатов нужно будет
+  // шифровать msg.text через Web Crypto API (SubtleCrypto, AES-GCM с ключом по протоколу вроде
+  // Diffie-Hellman между двумя устройствами) перед отправкой на сервер, и расшифровывать
+  // на клиенте при получении — сервер должен видеть только абракадабру.
+
+  document.getElementById('renameBtn').addEventListener('click', async () => {
+    if (!currentContact) return;
+    const newName = prompt('Как назвать этот контакт (видно только тебе):', currentContact.name);
+    if (newName === null) return;
+    const r = await api('/api/set_alias', { method: 'POST', body: { contact: currentContact.username, alias: newName.trim() } });
+    currentContact.name = r.data.name;
+    document.getElementById('chatName').innerHTML = escapeHtml(currentContact.name) + officialBadge(currentContact.official);
+    const idx = contactsCache.findIndex(c => c.username === r.data.contact);
+    if (idx !== -1) contactsCache[idx].name = r.data.name;
+  });
+
+  function formatTime(t) {
+    const d = new Date(t);
+    if (isNaN(d.getTime())) return t; // на случай старого формата времени
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  const RU_MONTHS = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+  function dateKey(t) {
+    const d = new Date(t);
+    if (isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+  }
+  function formatDateSeparator(t) {
+    const d = new Date(t);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    let s = d.getDate() + ' ' + RU_MONTHS[d.getMonth()];
+    if (d.getFullYear() !== now.getFullYear()) s += ' ' + d.getFullYear();
+    return s;
+  }
+  function insertDateSeparatorIfNeeded(msg) {
+    const key = dateKey(msg.time);
+    if (!key || key === lastRenderedDateKey) return;
+    lastRenderedDateKey = key;
+    const sep = document.createElement('div');
+    sep.className = 'date-separator';
+    sep.textContent = formatDateSeparator(msg.time);
+    document.getElementById('messages').appendChild(sep);
+  }
+  function renderMessage(msg) {
+    if (msg.deleted) return; // удалённое "у всех" сообщение просто не показываем при первом рендере
+    messagesById[msg.id] = msg;
+    insertDateSeparatorIfNeeded(msg);
+    const div = document.createElement('div');
+    const isOwn = msg.from_user === me.username;
+    div.className = 'msg' + (isOwn ? ' own' : '');
+    div.dataset.id = msg.id;
+    fillBubble(div, msg, isOwn);
+    attachLongPress(div, msg);
+    document.getElementById('messages').appendChild(div);
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  function fillBubble(div, msg, isOwn) {
+    const ticks = isOwn ? ('<span class="ticks' + (msg.read ? ' read' : '') + '">' + (msg.read ? '✓✓' : '✓') + '</span>') : '';
+    const editedTag = msg.edited ? '<span class="edited-tag">изменено</span>' : '';
+    let bodyHtml = '';
+    if (msg.attachment_type === 'photo' && msg.attachment_data) {
+      bodyHtml = '<img class="msg-photo" src="' + msg.attachment_data + '">' + (msg.text ? '<div style="margin-top:6px;">' + escapeHtml(msg.text) + '</div>' : '');
+    } else if (msg.attachment_type === 'voice' && msg.attachment_data) {
+      const mins = Math.floor((msg.attachment_duration || 0) / 60);
+      const secs = String((msg.attachment_duration || 0) % 60).padStart(2, '0');
+      bodyHtml = '<div class="voice-msg"><button class="voice-play-btn">▶</button><span class="voice-duration">' + mins + ':' + secs + '</span><button class="voice-speed-btn">1x</button></div>';
+    } else if (msg.attachment_type === 'file' && msg.attachment_data) {
+      let meta = {}; try { meta = JSON.parse(msg.attachment_meta || '{}'); } catch (e) {}
+      const sizeKb = meta.size ? Math.max(1, Math.round(meta.size / 1024)) + ' КБ' : '';
+      bodyHtml = '<a class="file-msg" href="' + msg.attachment_data + '" download="' + escapeHtml(meta.name || 'file') + '">📄 <div><div class="file-name">' + escapeHtml(meta.name || 'Файл') + '</div><div class="file-size">' + sizeKb + '</div></div></a>';
+    } else if (msg.attachment_type === 'location') {
+      let meta = {}; try { meta = JSON.parse(msg.attachment_meta || '{}'); } catch (e) {}
+      const mapUrl = 'https://www.openstreetmap.org/?mlat=' + meta.lat + '&mlon=' + meta.lng + '#map=15/' + meta.lat + '/' + meta.lng;
+      bodyHtml = '<a class="location-msg" href="' + mapUrl + '" target="_blank" rel="noopener">📍 <div><div class="file-name">Геопозиция</div><div class="file-size">Открыть на карте</div></div></a>';
+    } else {
+      bodyHtml = escapeHtml(msg.text);
+    }
+    let prefixHtml = '';
+    if (msg.forwarded_from) {
+      const displayName = msg.forwarded_from_name || msg.forwarded_from;
+      if (msg.forwarded_from_hidden) {
+        prefixHtml += '<div class="forwarded-tag">Переслано от <span class="fwd-name-hidden">' + escapeHtml(displayName) + '</span></div>';
+      } else {
+        prefixHtml += '<div class="forwarded-tag">Переслано от <span class="fwd-name-link">' + escapeHtml(displayName) + '</span></div>';
+      }
+    }
+    if (msg.reply_to_id && messagesById[msg.reply_to_id]) {
+      const q = messagesById[msg.reply_to_id];
+      const qText = q.text || (q.attachment_type === 'photo' ? '📷 Фото' : q.attachment_type === 'voice' ? '🎤 Голосовое' : q.attachment_type === 'file' ? '📄 Файл' : q.attachment_type === 'location' ? '📍 Геопозиция' : '');
+      prefixHtml += '<div class="reply-quote">' + escapeHtml(qText.slice(0, 80)) + '</div>';
+    }
+    div.innerHTML = '<div class="meta">' + formatTime(msg.time) + editedTag + ticks + '</div>' +
+      '<div class="bubble">' + prefixHtml + bodyHtml + '</div>';
+    if (msg.forwarded_from) {
+      const nameEl = div.querySelector('.fwd-name-link, .fwd-name-hidden');
+      nameEl.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (msg.forwarded_from_hidden) {
+          alert('Аккаунт скрыт пользователем');
+          return;
+        }
+        const r = await api('/api/find_user?username=' + encodeURIComponent(msg.forwarded_from));
+        if (r.data.found) openProfileViewer(r.data.user);
+        else alert('Аккаунт скрыт пользователем');
+      });
+    }
+    if (msg.attachment_type === 'photo' && msg.attachment_data) {
+      div.querySelector('.msg-photo').addEventListener('click', () => {
+        document.getElementById('photoPreviewImg').src = msg.attachment_data;
+        document.getElementById('photoPreviewOverlay').style.display = 'flex';
+      });
+    }
+    if (msg.attachment_type === 'voice' && msg.attachment_data) {
+      div.querySelector('.voice-play-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        playVoice(e.target, msg.attachment_data);
+      });
+      const speedBtn = div.querySelector('.voice-speed-btn');
+      speedBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const speeds = [1, 1.5, 2];
+        const cur = parseFloat(speedBtn.dataset.speed || '1');
+        const next = speeds[(speeds.indexOf(cur) + 1) % speeds.length];
+        speedBtn.dataset.speed = next;
+        speedBtn.textContent = next + 'x';
+        const playBtn = div.querySelector('.voice-play-btn');
+        if (playBtn._audio) playBtn._audio.playbackRate = next;
+      });
+    }
+    if (needsTranslateButton(msg.text)) {
+      const btn = document.createElement('button');
+      btn.className = 'translate-btn';
+      btn.textContent = 'Перевести';
+      btn.addEventListener('click', (e) => { e.stopPropagation(); translateMessage(div, msg); });
+      div.querySelector('.bubble').appendChild(btn);
+    }
+  }
+
+  // Обновление уже отрисованного сообщения (правка) или удаление из DOM
+  function applyUpdatedMessage(msg) {
+    messagesById[msg.id] = msg;
+    const div = document.querySelector('.msg[data-id="' + msg.id + '"]');
+    if (!div) { if (!msg.deleted) renderMessage(msg); return; }
+    if (msg.deleted) { div.remove(); return; }
+    const isOwn = msg.from_user === me.username;
+    fillBubble(div, msg, isOwn);
+    attachLongPress(div, msg);
+  }
+
+  // --- Грубое определение "нужен ли перевод": сравниваем алфавит сообщения с ожидаемым для языка устройства ---
+  function needsTranslateButton(text) {
+    const hasLetters = /[a-zA-Zа-яА-ЯёЁ\u00C0-\u024F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0600-\u06FF]/.test(text);
+    if (!hasLetters) return false;
+    const deviceIsRu = (navigator.language || 'ru').toLowerCase().startsWith('ru');
+    const hasCyrillic = /[а-яА-ЯёЁ]/.test(text);
+    const hasLatin = /[a-zA-Z]/.test(text);
+    // ru-устройство ожидает кириллицу; остальные устройства (en/fr/de/...) ожидаем латиницу.
+    // Если в тексте нет ни одной "родной" буквы устройства (китайский/японский/корейский/арабский и т.д.
+    // тоже подпадают сюда, т.к. не содержат ни кириллицы, ни латиницы) — предлагаем перевод.
+    if (deviceIsRu && !hasCyrillic) return true;
+    if (!deviceIsRu && !hasLatin) return true;
+    return false;
+  }
+
+  function deviceLangCode() {
+    return (navigator.language || 'ru').split('-')[0].toLowerCase();
+  }
+
+  async function translateMessage(div, msg) {
+    const btn = div.querySelector('.translate-btn');
+    if (btn) btn.textContent = 'Перевожу...';
+    const tl = deviceLangCode();
+    try {
+      // sl=auto — сервис сам определяет исходный язык (китайский, французский, любой)
+      const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
+        encodeURIComponent(tl) + '&dt=t&q=' + encodeURIComponent(msg.text);
+      const res = await fetch(url);
+      const data = await res.json();
+      const translated = data && data[0] ? data[0].map(part => part[0]).join('') : null;
+      if (btn) btn.remove();
+      if (translated) {
+        const t = document.createElement('div');
+        t.className = 'translation';
+        t.textContent = translated;
+        div.querySelector('.bubble').appendChild(t);
+      }
+    } catch (e) {
+      if (btn) btn.textContent = 'Не получилось перевести';
+    }
+  }
+
+
+  // --- Long-press / контекстное меню сообщения + свайп влево = быстрый ответ ---
+  function attachLongPress(div, msg) {
+    let timer = null;
+    let startX = 0, startY = 0, swiping = false;
+    const start = (e) => {
+      timer = setTimeout(() => openMessageMenu(msg), 500);
+      const t = e.touches ? e.touches[0] : e;
+      startX = t.clientX; startY = t.clientY; swiping = false;
+    };
+    const move = (e) => {
+      const t = e.touches ? e.touches[0] : e;
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (dx < 0) {
+          swiping = true;
+          div.style.transform = 'translateX(' + Math.max(dx, -70) + 'px)';
+        }
+      }
+    };
+    const end = () => {
+      if (timer) clearTimeout(timer);
+      if (swiping) {
+        div.style.transition = 'transform 0.2s';
+        div.style.transform = '';
+        setTimeout(() => { div.style.transition = ''; }, 200);
+      }
+      swiping = false;
+    };
+    div.addEventListener('touchstart', start, { passive: true });
+    div.addEventListener('touchmove', move, { passive: true });
+    div.addEventListener('touchend', (e) => {
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX;
+      end();
+      if (dx < -55) startReply(msg);
+    });
+    div.addEventListener('contextmenu', (e) => { e.preventDefault(); openMessageMenu(msg); });
+  }
+
+  // --- Ответ на сообщение ---
+  let replyToMsg = null;
+  function startReply(msg) {
+    replyToMsg = msg;
+    const preview = msg.text || (msg.attachment_type === 'photo' ? '📷 Фото' : msg.attachment_type === 'voice' ? '🎤 Голосовое' : '');
+    document.getElementById('replyBarText').textContent = preview.slice(0, 90);
+    document.getElementById('replyBar').style.display = 'flex';
+    document.getElementById('textInput').focus();
+  }
+  document.getElementById('replyBarCancel').addEventListener('click', () => {
+    replyToMsg = null;
+    document.getElementById('replyBar').style.display = 'none';
+  });
+
+  // --- Пересылка сообщения ---
+  function openForwardMenu(msg) {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+    const titleRow = document.createElement('div');
+    titleRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:10px 22px;';
+    const title = document.createElement('div');
+    title.style.cssText = 'color:var(--text-dim); font-size:13px;';
+    title.textContent = 'Переслать кому (можно выбрать нескольких):';
+    titleRow.appendChild(title);
+    const menuIconBtn = document.createElement('button');
+    menuIconBtn.textContent = '☰';
+    menuIconBtn.style.cssText = 'background:none; border:none; color:var(--text-dim); font-size:16px; cursor:pointer; padding:4px 8px;';
+    titleRow.appendChild(menuIconBtn);
+    menu.appendChild(titleRow);
+
+    const hideRow = document.createElement('label');
+    hideRow.className = 'menu-check-row';
+    hideRow.style.display = 'none';
+    const hideCheck = document.createElement('input');
+    hideCheck.type = 'checkbox';
+    hideRow.appendChild(hideCheck);
+    const hideLabel = document.createElement('span');
+    hideLabel.textContent = 'Скрыть имя отправителя';
+    hideRow.appendChild(hideLabel);
+    menu.appendChild(hideRow);
+    menuIconBtn.addEventListener('click', () => {
+      hideRow.style.display = hideRow.style.display === 'none' ? 'flex' : 'none';
+    });
+
+    const selected = new Set();
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'max-height:280px; overflow-y:auto;';
+    contactsCache.filter(c => c.username !== 'factbot').forEach(c => {
+      const row = document.createElement('label');
+      row.className = 'menu-check-row';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.addEventListener('change', () => {
+        if (check.checked) selected.add(c.username); else selected.delete(c.username);
+        sendFwdBtn.textContent = selected.size ? 'Переслать (' + selected.size + ')' : 'Переслать';
+        sendFwdBtn.disabled = selected.size === 0;
+      });
+      row.appendChild(check);
+      const label = document.createElement('span');
+      label.textContent = c.name;
+      row.appendChild(label);
+      listWrap.appendChild(row);
+    });
+    menu.appendChild(listWrap);
+
+    const sendFwdBtn = document.createElement('button');
+    sendFwdBtn.textContent = 'Переслать';
+    sendFwdBtn.disabled = true;
+    sendFwdBtn.addEventListener('click', async () => {
+      closeMessageMenu();
+      const originalSender = msg.forwarded_from || msg.from_user; // при повторной пересылке сохраняем настоящего автора
+      const hideSender = hideCheck.checked;
+      for (const username of selected) {
+        const r = await api('/api/send_message', { method: 'POST', body: {
+          to: username, text: msg.text || '', attachment_type: msg.attachment_type || null,
+          attachment_data: msg.attachment_data || null, attachment_duration: msg.attachment_duration || null,
+          attachment_meta: msg.attachment_meta || null,
+          forwarded_from: hideSender ? null : originalSender
+        }});
+        if (r.ok && currentContact && currentContact.username === username) {
+          renderMessage(r.data);
+          sinceId = Math.max(sinceId, r.data.id);
+        }
+      }
+    });
+    menu.appendChild(sendFwdBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  // --- Свайп вправо по фону чата = назад в меню переписок ---
+  (function attachChatSwipeBack() {
+    const area = document.getElementById('messages');
+    let startX = 0, startY = 0, active = false;
+    area.addEventListener('touchstart', (e) => {
+      if (e.target.closest('.msg')) { active = false; return; }
+      const t = e.touches[0]; startX = t.clientX; startY = t.clientY; active = true;
+    }, { passive: true });
+    area.addEventListener('touchend', (e) => {
+      if (!active) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      if (dx > 90 && Math.abs(dy) < 60) { saveDraftForCurrent(); currentContact = null; showScreen('dashScreen'); }
+      active = false;
+    });
+  })();
+
+  function closeMessageMenu() {
+    const ov = document.getElementById('msgMenuOverlay');
+    if (ov) ov.remove();
+  }
+
+  function openMessageMenu(msg) {
+    closeMessageMenu();
+    const isOwn = msg.from_user === me.username;
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+
+    const replyBtn = document.createElement('button');
+    replyBtn.textContent = 'Ответить';
+    replyBtn.addEventListener('click', () => { closeMessageMenu(); startReply(msg); });
+    menu.appendChild(replyBtn);
+
+    if (!(currentContact && currentContact.is_secret)) {
+      const fwdBtn = document.createElement('button');
+      fwdBtn.textContent = 'Переслать';
+      fwdBtn.addEventListener('click', () => { closeMessageMenu(); openForwardMenu(msg); });
+      menu.appendChild(fwdBtn);
+    }
+
+    if (isOwn) {
+      const editBtn = document.createElement('button');
+      editBtn.textContent = 'Изменить';
+      editBtn.addEventListener('click', () => { closeMessageMenu(); editMessage(msg); });
+      menu.appendChild(editBtn);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.textContent = 'Удалить';
+    delBtn.addEventListener('click', () => { closeMessageMenu(); openDeleteMenu(msg); });
+    menu.appendChild(delBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  function openDeleteMenu(msg) {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+
+    const checkRow = document.createElement('label');
+    checkRow.className = 'menu-check-row';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.id = 'deleteEveryoneCheck';
+    checkRow.appendChild(check);
+    const checkLabel = document.createElement('span');
+    checkLabel.textContent = 'Удалить у всех';
+    checkRow.appendChild(checkLabel);
+    menu.appendChild(checkRow);
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'danger';
+    confirmBtn.textContent = 'Удалить';
+    confirmBtn.addEventListener('click', async () => {
+      const everyone = check.checked;
+      closeMessageMenu();
+      const r = await api('/api/delete_message', { method: 'POST', body: { id: msg.id, everyone } });
+      if (r.ok) {
+        if (everyone) {
+          applyUpdatedMessage(Object.assign({}, msg, { deleted: true }));
+        } else {
+          const div = document.querySelector('.msg[data-id="' + msg.id + '"]');
+          if (div) div.remove();
+        }
+      } else {
+        alert('Не получилось удалить сообщение');
+      }
+    });
+    menu.appendChild(confirmBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  async function editMessage(msg) {
+    const newText = prompt('Изменить сообщение:', msg.text);
+    if (newText === null || !newText.trim() || newText === msg.text) return;
+    const r = await api('/api/edit_message', { method: 'POST', body: { id: msg.id, text: newText.trim() } });
+    if (r.ok) {
+      applyUpdatedMessage(Object.assign({}, msg, { text: newText.trim(), edited: true }));
+    } else {
+      alert('Не получилось изменить сообщение');
+    }
+  }
+
+  async function send() {
+    const input = document.getElementById('textInput');
+    const text = input.value.trim();
+    if (!text || !currentContact) return;
+    if (currentContact.is_secret) { openTimerPicker((ttl) => doSend(text, ttl)); return; }
+    doSend(text, null);
+  }
+  async function doSend(text, ttl) {
+    const input = document.getElementById('textInput');
+    const sendBtn = document.getElementById('sendBtn');
+    sendBtn.disabled = true;
+    const body = { to: currentContact.username, text };
+    if (replyToMsg) body.reply_to_id = replyToMsg.id;
+    if (ttl) body.ttl_seconds = ttl;
+    const r = await api('/api/send_message', { method: 'POST', body });
+    sendBtn.disabled = false;
+    if (r.ok) {
+      input.value = '';
+      localStorage.removeItem(draftKey(currentContact));
+      replyToMsg = null;
+      document.getElementById('replyBar').style.display = 'none';
+      renderMessage(r.data);
+      sinceId = Math.max(sinceId, r.data.id);
+      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
+    } else if (r.data && r.data.error === 'disk_full') {
+      openStorageCleanup(true);
+    } else {
+      alert('Не получилось отправить — проверь связь и попробуй ещё раз. Текст сообщения сохранён в поле.');
+    }
+  }
+  document.getElementById('sendBtn').addEventListener('click', send);
+  document.getElementById('textInput').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+  document.getElementById('textInput').addEventListener('input', () => { if (currentContact) saveDraftForCurrent(); });
+
+  // --- Отмена отправки (5 секунд) ---
+  let undoTimer = null;
+  function showSendUndoSnackbar(msgId) {
+    const bar = document.getElementById('undoSnackbar');
+    if (undoTimer) clearTimeout(undoTimer);
+    bar.style.display = 'flex';
+    bar.dataset.msgId = msgId;
+    undoTimer = setTimeout(() => { bar.style.display = 'none'; }, 5000);
+  }
+  document.getElementById('undoSnackbarBtn').addEventListener('click', () => {
+    const bar = document.getElementById('undoSnackbar');
+    const msgId = parseInt(bar.dataset.msgId, 10);
+    bar.style.display = 'none';
+    if (undoTimer) clearTimeout(undoTimer);
+    confirmOverlay('Вы точно хотите удалить?', async () => {
+      const r = await api('/api/delete_message', { method: 'POST', body: { id: msgId, everyone: true } });
+      if (r.ok) {
+        const div = document.querySelector('.msg[data-id="' + msgId + '"]');
+        if (div) div.remove();
+      }
+    });
+  });
+  function confirmOverlay(text, onYes) {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+    const title = document.createElement('div');
+    title.style.cssText = 'padding:14px 22px; text-align:center; font-size:14px;';
+    title.textContent = text;
+    menu.appendChild(title);
+    const yesBtn = document.createElement('button');
+    yesBtn.className = 'danger';
+    yesBtn.textContent = 'Да';
+    yesBtn.addEventListener('click', () => { closeMessageMenu(); onYes(); });
+    menu.appendChild(yesBtn);
+    const noBtn = document.createElement('button');
+    noBtn.textContent = 'Нет';
+    noBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(noBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  // --- Крутилка таймера самоуничтожения (только секретные чаты), 3-20 секунд ---
+  function openTimerPicker(onConfirm) {
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+    const title = document.createElement('div');
+    title.style.cssText = 'padding:10px 22px 0; color:var(--text-dim); font-size:13px; text-align:center;';
+    title.textContent = 'Удалить после прочтения через:';
+    menu.appendChild(title);
+    let value = 10;
+    const wheel = document.createElement('div');
+    wheel.className = 'timer-wheel';
+    const minusBtn = document.createElement('button'); minusBtn.textContent = '−';
+    const valDiv = document.createElement('div'); valDiv.className = 'timer-value'; valDiv.textContent = value + ' сек';
+    const plusBtn = document.createElement('button'); plusBtn.textContent = '+';
+    minusBtn.addEventListener('click', () => { value = Math.max(3, value - 1); valDiv.textContent = value + ' сек'; });
+    plusBtn.addEventListener('click', () => { value = Math.min(20, value + 1); valDiv.textContent = value + ' сек'; });
+    wheel.appendChild(minusBtn); wheel.appendChild(valDiv); wheel.appendChild(plusBtn);
+    menu.appendChild(wheel);
+    const sendBtn = document.createElement('button');
+    sendBtn.textContent = 'Отправить с таймером';
+    sendBtn.addEventListener('click', () => { closeMessageMenu(); onConfirm(value); });
+    menu.appendChild(sendBtn);
+    const noTimerBtn = document.createElement('button');
+    noTimerBtn.textContent = 'Без таймера';
+    noTimerBtn.addEventListener('click', () => { closeMessageMenu(); onConfirm(null); });
+    menu.appendChild(noTimerBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  }
+
+  async function sendAttachment(type, dataUrl, duration, meta) {
+    if (!currentContact) return;
+    const body = { to: currentContact.username, text: '', attachment_type: type,
+      attachment_data: dataUrl || null, attachment_duration: duration || null,
+      attachment_meta: meta ? JSON.stringify(meta) : null };
+    if (replyToMsg) body.reply_to_id = replyToMsg.id;
+    const r = await api('/api/send_message', { method: 'POST', body });
+    if (r.ok) {
+      replyToMsg = null;
+      document.getElementById('replyBar').style.display = 'none';
+      renderMessage(r.data);
+      sinceId = Math.max(sinceId, r.data.id);
+      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
+    } else if (r.data && r.data.error === 'disk_full') {
+      openStorageCleanup(true);
+    } else {
+      alert('Не получилось отправить вложение');
+    }
+    return r;
+  }
+
+  // --- Фото в сообщении ---
+  document.getElementById('attachBtn').addEventListener('click', () => {
+    if (!currentContact) return;
+    closeMessageMenu();
+    const overlay = document.createElement('div');
+    overlay.className = 'msg-menu-overlay';
+    overlay.id = 'msgMenuOverlay';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
+    const menu = document.createElement('div');
+    menu.className = 'msg-menu';
+
+    const galleryBtn = document.createElement('button');
+    galleryBtn.textContent = '🖼 Галерея';
+    galleryBtn.addEventListener('click', () => { closeMessageMenu(); document.getElementById('photoInput').click(); });
+    menu.appendChild(galleryBtn);
+
+    const fileBtn = document.createElement('button');
+    fileBtn.textContent = '📄 Файл';
+    fileBtn.addEventListener('click', () => { closeMessageMenu(); document.getElementById('fileInput').click(); });
+    menu.appendChild(fileBtn);
+
+    const locBtn = document.createElement('button');
+    locBtn.textContent = '📍 Геопозиция';
+    locBtn.addEventListener('click', () => { closeMessageMenu(); sendLocation(); });
+    menu.appendChild(locBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Отмена';
+    cancelBtn.addEventListener('click', closeMessageMenu);
+    menu.appendChild(cancelBtn);
+
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+  });
+
+  document.getElementById('photoInput').addEventListener('change', async (e) => {
+    let files = Array.from(e.target.files);
+    e.target.value = '';
+    if (!files.length) return;
+    if (files.length > 50) { alert('Можно отправить не больше 50 фото за раз — беру первые 50.'); files = files.slice(0, 50); }
+    for (const file of files) {
+      try {
+        const dataUrl = await resizeImage(file, 900, 0.55);
+        await sendAttachment('photo', dataUrl);
+      } catch (e2) { /* пропускаем битый файл, продолжаем остальные */ }
+    }
+  });
+
+  document.getElementById('fileInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { alert('Файл слишком большой (максимум 8 МБ) — бесплатный хостинг Частоты ограничен по месту на диске.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => sendAttachment('file', reader.result, null, { name: file.name, size: file.size });
+    reader.onerror = () => alert('Не получилось прочитать файл');
+    reader.readAsDataURL(file);
+  });
+
+  function sendLocation() {
+    if (!navigator.geolocation) { alert('Геолокация не поддерживается этим браузером'); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => sendAttachment('location', null, null, { lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => alert('Не получилось определить геопозицию — проверь разрешения браузера')
+    );
+  }
+
+  document.getElementById('photoPreviewOverlay').addEventListener('click', () => {
+    document.getElementById('photoPreviewOverlay').style.display = 'none';
+  });
+
+  // --- Просмотр профиля контакта (клик по аватарке в шапке чата) ---
+  let profilePhotos = [];
+  let profilePhotoIndex = 0;
+  async function openProfileViewer(user) {
+    const overlay = document.getElementById('profileViewerOverlay');
+    overlay.style.display = 'flex';
+    document.getElementById('profileViewerImg').src = '';
+    const infoEl = document.getElementById('profileViewerInfo');
+    let birthdayText = 'не указан';
+    if (user.birthday) {
+      const bd = new Date(user.birthday + 'T00:00:00');
+      if (!isNaN(bd.getTime())) birthdayText = bd.getDate() + ' ' + RU_MONTHS[bd.getMonth()];
+    }
+    infoEl.innerHTML =
+      '<div><b>Имя пользователя:</b> @' + escapeHtml(user.username) + '</div>' +
+      '<div><b>День рождения:</b> ' + birthdayText + '</div>' +
+      '<div><b>О себе:</b> ' + (user.bio ? escapeHtml(user.bio) : 'не указано') + '</div>';
+    const r = await api('/api/get_photos?username=' + encodeURIComponent(user.username));
+    profilePhotos = (r.ok && r.data.photos.length) ? r.data.photos : (user.avatar_photo ? [{ data: user.avatar_photo }] : []);
+    profilePhotoIndex = 0;
+    showProfilePhoto();
+  }
+  function showProfilePhoto() {
+    const nav = profilePhotos.length > 1;
+    document.getElementById('profilePhotoPrev').style.display = nav ? 'block' : 'none';
+    document.getElementById('profilePhotoNext').style.display = nav ? 'block' : 'none';
+    if (!profilePhotos.length) {
+      document.getElementById('profileViewerImg').src = '';
+      document.getElementById('profilePhotoDownload').style.display = 'none';
+      return;
+    }
+    const photo = profilePhotos[profilePhotoIndex];
+    document.getElementById('profileViewerImg').src = photo.data;
+    const dl = document.getElementById('profilePhotoDownload');
+    dl.href = photo.data;
+    dl.style.display = 'block';
+  }
+  document.getElementById('profilePhotoPrev').addEventListener('click', () => {
+    if (!profilePhotos.length) return;
+    profilePhotoIndex = (profilePhotoIndex - 1 + profilePhotos.length) % profilePhotos.length;
+    showProfilePhoto();
+  });
+  document.getElementById('profilePhotoNext').addEventListener('click', () => {
+    if (!profilePhotos.length) return;
+    profilePhotoIndex = (profilePhotoIndex + 1) % profilePhotos.length;
+    showProfilePhoto();
+  });
+  (function attachProfileSwipe() {
+    const area = document.getElementById('profileViewerPhotoArea');
+    let startX = 0;
+    area.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; }, { passive: true });
+    area.addEventListener('touchend', (e) => {
+      const dx = e.changedTouches[0].clientX - startX;
+      if (Math.abs(dx) < 40 || !profilePhotos.length) return;
+      profilePhotoIndex = dx < 0
+        ? (profilePhotoIndex + 1) % profilePhotos.length
+        : (profilePhotoIndex - 1 + profilePhotos.length) % profilePhotos.length;
+      showProfilePhoto();
+    });
+  })();
+  document.getElementById('profileViewerClose').addEventListener('click', () => {
+    document.getElementById('profileViewerOverlay').style.display = 'none';
+  });
+  document.getElementById('savedChatBtn').addEventListener('click', () => {
+    openChat({ username: me.username, name: 'Избранное', avatar: '⭐', avatar_photo: null,
+      online: false, blocked_by_me: false, is_secret: false, official: false });
+  });
+  document.getElementById('supportBtn').addEventListener('click', async () => {
+    if (me.username === 'support') { alert('Ты сам и есть поддержка :)'); return; }
+    const r = await api('/api/find_user?username=support');
+    if (r.ok && r.data.found) {
+      openChat(r.data.user);
+    } else {
+      alert('Аккаунт поддержки ещё не создан. Заведи аккаунт с юзернеймом "support" (или смени юзернейм своего аккаунта в настройках), чтобы отвечать людям отсюда.');
+    }
+  });
+  document.getElementById('chatAvatar').addEventListener('click', () => {
+    if (currentContact) openProfileViewer(currentContact);
+  });
+
+  // --- Шторка "у контакта сегодня день рождения" на главном экране ---
+  function checkBirthdays(contacts) {
+    const now = new Date();
+    const todayKey = now.getMonth() + '-' + now.getDate();
+    const matches = contacts.filter(c => {
+      if (!c.birthday) return false;
+      const bd = new Date(c.birthday + 'T00:00:00');
+      return !isNaN(bd.getTime()) && (bd.getMonth() + '-' + bd.getDate()) === todayKey;
+    });
+    const banner = document.getElementById('birthdayBanner');
+    if (!matches.length) { banner.style.display = 'none'; return; }
+    banner.style.display = 'block';
+    banner.innerHTML = matches.map(c => 'У ' + escapeHtml(c.name) + ' сегодня день рождения🎂').join('<br>');
+  }
+
+  // --- Место на диске (общее на весь хостинг Частоты, не только твоё) ---
+  function formatBytes(n) {
+    if (n < 1024) return n + ' Б';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' КБ';
+    return (n / (1024 * 1024)).toFixed(1) + ' МБ';
+  }
+  async function checkStorageWarning() {
+    const r = await api('/api/storage_usage');
+    if (!r.ok) return;
+    const banner = document.getElementById('storageWarningBanner');
+    const ratio = r.data.approx_bytes / r.data.assumed_quota_bytes;
+    if (ratio < 0.8) { banner.style.display = 'none'; return; }
+    banner.style.display = 'flex';
+    banner.innerHTML = '<span>⚠ Место на диске почти закончилось (' + formatBytes(r.data.approx_bytes) + ' занято)</span>';
+    const btn = document.createElement('button');
+    btn.textContent = 'Очистить';
+    btn.addEventListener('click', () => openStorageCleanup(false));
+    banner.appendChild(btn);
+  }
+
+  let cleanupSelected = new Set();
+  async function openStorageCleanup(forced) {
+    closeMessageMenu();
+    cleanupSelected = new Set();
+    const overlay = document.getElementById('storageCleanupOverlay');
+    document.getElementById('storageCleanupTitle').textContent = forced
+      ? 'На вашем диске закончилась память'
+      : 'Освободить место';
+    document.getElementById('storageCleanupSubtitle').textContent =
+      'Выбери фото/файлы для удаления. Они удалятся у всех участников чата — иначе место физически не освободится.';
+    overlay.style.display = 'flex';
+    const listEl = document.getElementById('storageCleanupList');
+    listEl.innerHTML = 'Загрузка...';
+    const r = await api('/api/list_attachments');
+    listEl.innerHTML = '';
+    if (!r.ok || !r.data.items.length) {
+      listEl.innerHTML = '<div style="padding:16px 22px; color:var(--text-dim); font-size:13px;">Вложений не найдено</div>';
+      return;
+    }
+    r.data.items.forEach(it => {
+      const row = document.createElement('label');
+      row.className = 'cleanup-item';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.addEventListener('change', () => {
+        if (check.checked) cleanupSelected.add(it.id); else cleanupSelected.delete(it.id);
+        const delBtn = document.getElementById('storageCleanupDeleteBtn');
+        delBtn.disabled = cleanupSelected.size === 0;
+        delBtn.textContent = cleanupSelected.size ? 'Удалить выбранные (' + cleanupSelected.size + ')' : 'Удалить выбранные';
+      });
+      row.appendChild(check);
+      const icon = it.attachment_type === 'photo' ? '📷' : it.attachment_type === 'voice' ? '🎤' : it.attachment_type === 'file' ? '📄' : '📍';
+      const info = document.createElement('div');
+      info.className = 'cleanup-item-info';
+      info.innerHTML = icon + ' с @' + escapeHtml(it.other) + '<div class="cleanup-item-size">' + formatBytes(it.approx_bytes) + '</div>';
+      row.appendChild(info);
+      listEl.appendChild(row);
+    });
+  }
+  document.getElementById('storageCleanupCloseBtn').addEventListener('click', () => {
+    document.getElementById('storageCleanupOverlay').style.display = 'none';
+  });
+  document.getElementById('storageCleanupDeleteBtn').addEventListener('click', async () => {
+    if (!cleanupSelected.size) return;
+    const r = await api('/api/bulk_delete_attachments', { method: 'POST', body: { ids: Array.from(cleanupSelected) } });
+    if (r.ok) {
+      document.getElementById('storageCleanupOverlay').style.display = 'none';
+      checkStorageWarning();
+    } else {
+      alert('Не получилось удалить');
+    }
+  });
+
+  // --- Голосовые сообщения (удержание кнопки микрофона) ---
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recordStartTime = 0;
+  const voiceBtn = document.getElementById('voiceBtn');
+
+  async function startRecording() {
+    if (!currentContact || mediaRecorder) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const duration = Math.round((Date.now() - recordStartTime) / 1000);
+        voiceBtn.classList.remove('recording');
+        mediaRecorder = null;
+        if (duration < 1) return; // случайное касание
+        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onload = () => sendAttachment('voice', reader.result, duration);
+        reader.readAsDataURL(blob);
+      };
+      mediaRecorder.start();
+      recordStartTime = Date.now();
+      voiceBtn.classList.add('recording');
+    } catch (e) {
+      alert('Нет доступа к микрофону — разреши его в настройках браузера');
+    }
+  }
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+  }
+  voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+  voiceBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+  voiceBtn.addEventListener('mousedown', startRecording);
+  voiceBtn.addEventListener('mouseup', stopRecording);
+  voiceBtn.addEventListener('mouseleave', stopRecording);
+
+  function playVoice(btn, dataUrl) {
+    if (btn._audio && !btn._audio.paused) { btn._audio.pause(); btn._audio.currentTime = 0; btn.textContent = '▶'; return; }
+    if (!btn._audio) {
+      btn._audio = new Audio(dataUrl);
+      btn._audio.addEventListener('ended', () => { btn.textContent = '▶'; });
+      const speedBtn = btn.parentElement ? btn.parentElement.querySelector('.voice-speed-btn') : null;
+      if (speedBtn) btn._audio.playbackRate = parseFloat(speedBtn.dataset.speed || '1');
+    }
+    btn._audio.play();
+    btn.textContent = '⏸';
+  }
+
+  let lastTypingSent = 0;
+  document.getElementById('textInput').addEventListener('input', () => {
+    if (!currentContact) return;
+    const now = Date.now();
+    if (now - lastTypingSent > 1500) {
+      lastTypingSent = now;
+      api('/api/typing', { method: 'POST', body: { to: currentContact.username } });
+    }
+  });
+
+  // --- Опрос сервера (замена WebSocket) ---
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(() => { if (!document.hidden) pollOnce(); }, 5000);
+    pollOnce();
+  }
+  function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && token) pollOnce();
+  });
+
+  async function pollOnce() {
+    if (!token) return;
+    const withParam = currentContact ? '&with=' + encodeURIComponent(currentContact.username) : '';
+    const timeParam = currentContact && sinceTime ? '&since_time=' + encodeURIComponent(sinceTime) : '';
+    const r = await api('/api/sync?since_id=' + sinceId + withParam + timeParam);
+    if (!r.ok) return;
+    contactsCache = r.data.contacts;
+    if (document.getElementById('dashScreen').classList.contains('active')) renderContacts(contactsCache);
+
+    r.data.new_messages.forEach(m => {
+      if (currentContact && document.getElementById('chatScreen').classList.contains('active') &&
+          ((m.from_user === currentContact.username && m.to_user === me.username) ||
+           (m.from_user === me.username && m.to_user === currentContact.username))) {
+        if (!document.querySelector('.msg[data-id="' + m.id + '"]')) renderMessage(m);
+      }
+    });
+    (r.data.updated_messages || []).forEach(m => {
+      if (currentContact && document.getElementById('chatScreen').classList.contains('active') &&
+          ((m.from_user === currentContact.username && m.to_user === me.username) ||
+           (m.from_user === me.username && m.to_user === currentContact.username))) {
+        applyUpdatedMessage(m);
+      }
+    });
+    if (r.data.max_id > sinceId) sinceId = r.data.max_id;
+    if (r.data.sync_time) sinceTime = r.data.sync_time;
+
+    if (currentContact) {
+      document.querySelectorAll('#messages .msg.own').forEach(el => {
+        if (parseInt(el.dataset.id) <= r.data.read_up_to_id) {
+          const t = el.querySelector('.ticks');
+          if (t) { t.textContent = '✓✓'; t.classList.add('read'); }
+        }
+      });
+      document.getElementById('chatTyping').textContent = r.data.typing ? 'печатает...' : '';
+      const updated = contactsCache.find(c => c.username === currentContact.username);
+      if (updated) { currentContact.online = updated.online; currentContact.last_active = updated.last_active; renderChatStatus(currentContact); }
+    }
+  }
+</script>
+</body>
+</html>
+"""
+
+
+@app.route('/')
+def index():
+    return render_template_string(PAGE)
+
+
+if __name__ == '__main__':
+    print("Чат запущен! Открой в браузере: http://localhost:5000")
+    app.run(host='0.0.0.0', port=5000, debug=False)
