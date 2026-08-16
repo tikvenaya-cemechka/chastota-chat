@@ -878,7 +878,7 @@ def api_open_chat():
     with_user = request.args.get('with', '')
     want_secret = 1 if request.args.get('secret') == '1' else 0
     server_now = now_iso()
-    PAGE_SIZE = 40
+    PAGE_SIZE = 20
     conn = get_db()
     # лёгкий проход — только для простановки "прочитано" и запуска таймеров, без тяжёлых вложений
     light_rows = conn.execute('''
@@ -924,7 +924,7 @@ def api_load_older_messages():
     with_user = request.args.get('with', '')
     want_secret = 1 if request.args.get('secret') == '1' else 0
     before_id = int(request.args.get('before_id', 0))
-    PAGE_SIZE = 40
+    PAGE_SIZE = 20
     conn = get_db()
     rows = conn.execute('''
         SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
@@ -1497,7 +1497,7 @@ PAGE = """
     <button id="botFactBtn">Интересный факт</button>
   </div>
   <div id="undoSnackbar" style="display:none;">
-    <span>Сообщение отправлено</span>
+    <span id="undoSnackbarLabel" style="cursor:pointer;">Сообщение отправлено</span>
     <button id="undoSnackbarBtn">Отменить</button>
   </div>
 </div>
@@ -3170,6 +3170,10 @@ PAGE = """
     bar.dataset.msgId = msgId;
     undoTimer = setTimeout(() => { bar.style.display = 'none'; }, 5000);
   }
+  document.getElementById('undoSnackbarLabel').addEventListener('click', () => {
+    document.getElementById('undoSnackbar').style.display = 'none';
+    if (undoTimer) clearTimeout(undoTimer);
+  });
   document.getElementById('undoSnackbarBtn').addEventListener('click', () => {
     const bar = document.getElementById('undoSnackbar');
     const msgId = parseInt(bar.dataset.msgId, 10);
