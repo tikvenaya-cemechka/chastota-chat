@@ -1330,7 +1330,7 @@ PAGE = """
 </head>
 <body>
 
-<div id="splashScreen" class="screen center active">
+<div id="splashScreen" class="screen center active visible">
   <div class="splash-logo">📻 Частота</div>
   <div class="splash-fact" id="splashFact"></div>
   <button id="splashContinueBtn" class="splash-continue-btn">Продолжить</button>
