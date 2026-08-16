@@ -235,12 +235,12 @@ def public_user(u, viewer=None):
 def get_contacts(username):
     conn = get_db()
     rows = conn.execute('''
-        SELECT from_user, to_user, time, read, deleted, deleted_for, text, attachment_type FROM messages
+        SELECT from_user, to_user, time, read, deleted, deleted_for, text, attachment_type, secret FROM messages
         WHERE from_user=? OR to_user=? ORDER BY time ASC
     ''', (username, username)).fetchall()
     conn.close()
-    last_time = {}
-    last_preview = {}
+    last_time = {}       # для какие контакты вообще показывать + сортировка — учитывает и секретные сообщения
+    last_preview = {}    # а вот превью текста — только из НЕсекретных, чтобы не спалить содержимое в общем списке
     unread = {}
     for r in rows:
         deleted_for = [x for x in (r['deleted_for'] or '').split(',') if x]
@@ -248,6 +248,8 @@ def get_contacts(username):
             continue
         other = r['to_user'] if r['from_user'] == username else r['from_user']
         last_time[other] = r['time']  # строки отсортированы по времени по возрастанию — последняя запись побеждает
+        if r['secret']:
+            continue
         if r['attachment_type'] == 'photo':
             preview = '📷 Фото'
         elif r['attachment_type'] == 'voice':
@@ -268,7 +270,7 @@ def get_contacts(username):
         if u:
             c = public_user(u, viewer=username)
             c['last_time'] = t
-            c['last_preview'] = last_preview.get(other, '')
+            c['last_preview'] = last_preview.get(other, '🔒 Секретная переписка')
             c['unread'] = unread.get(other, 0)
             contacts.append(c)
     contacts.sort(key=lambda c: c['last_time'] or '', reverse=True)
@@ -405,6 +407,29 @@ def api_logout():
     return jsonify({'ok': True})
 
 
+@app.route('/api/delete_account', methods=['POST'])
+def api_delete_account():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    password = (request.json or {}).get('password', '')
+    if not check_password_hash(me['password_hash'], password):
+        return jsonify({'error': 'Неверный пароль'}), 400
+    username = me['username']
+    conn = get_db()
+    conn.execute('DELETE FROM users WHERE username=?', (username,))
+    conn.execute('DELETE FROM messages WHERE from_user=? OR to_user=?', (username, username))
+    conn.execute('DELETE FROM aliases WHERE owner=? OR contact=?', (username, username))
+    conn.execute('DELETE FROM sessions WHERE username=?', (username,))
+    conn.execute('DELETE FROM pinned_contacts WHERE owner=? OR contact=?', (username, username))
+    conn.execute('DELETE FROM blocked_users WHERE blocker=? OR blocked=?', (username, username))
+    conn.execute('DELETE FROM secret_chats WHERE owner=? OR contact=?', (username, username))
+    conn.execute('DELETE FROM avatar_photos WHERE username=?', (username,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/find_user')
 def api_find_user():
     me = require_auth()
@@ -448,7 +473,10 @@ def api_send_message():
         else:
             forwarded_from = None  # исходный пользователь не найден — не пишем пересылку
     ttl_seconds = data.get('ttl_seconds')  # таймер самоуничтожения (секретные чаты)
-    is_secret = 1 if is_secret_pair(me['username'], to_user) else 0
+    # секретность определяется тем, из какого режима чата реально отправлено сообщение
+    # (клиент явно указывает), а не просто фактом существования секретного чата с этим человеком —
+    # иначе обычные сообщения тоже помечались бы секретными и не показывались в обычном чате
+    is_secret = 1 if data.get('secret') else 0
     if blocked:
         # тихо "принимаем" сообщение — отправитель не узнаёт о блокировке, но получатель его не увидит
         conn.close()
@@ -533,12 +561,13 @@ def api_delete_chat():
     data = request.json or {}
     contact = data.get('contact', '')
     everyone = bool(data.get('everyone'))
+    want_secret = 1 if data.get('secret') else 0
     now = now_iso()
     conn = get_db()
     rows = conn.execute('''
         SELECT id, deleted_for FROM messages
-        WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?)
-    ''', (me['username'], contact, contact, me['username'])).fetchall()
+        WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=?
+    ''', (me['username'], contact, contact, me['username'], want_secret)).fetchall()
     for r in rows:
         if everyone:
             conn.execute('UPDATE messages SET deleted=1, updated_at=?, attachment_data=NULL, attachment_meta=NULL WHERE id=?', (now, r['id']))
@@ -562,12 +591,13 @@ def api_clear_history():
     data = request.json or {}
     contact = data.get('contact', '')
     everyone = bool(data.get('everyone'))
+    want_secret = 1 if data.get('secret') else 0
     now = now_iso()
     conn = get_db()
     rows = conn.execute('''
         SELECT id, deleted_for FROM messages
-        WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?)
-    ''', (me['username'], contact, contact, me['username'])).fetchall()
+        WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=?
+    ''', (me['username'], contact, contact, me['username'], want_secret)).fetchall()
     for r in rows:
         if everyone:
             conn.execute('UPDATE messages SET deleted=1, updated_at=?, attachment_data=NULL, attachment_meta=NULL WHERE id=?', (now, r['id']))
@@ -777,6 +807,7 @@ def api_sync():
     since_id = int(request.args.get('since_id', 0))
     since_time = request.args.get('since_time', '')
     with_user = request.args.get('with', '')
+    want_secret = 1 if request.args.get('secret') == '1' else 0
     server_now = now_iso()
 
     conn = get_db()
@@ -791,10 +822,10 @@ def api_sync():
     if with_user and since_time:
         upd_rows = conn.execute('''
             SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
-            WHERE id <= ? AND updated_at > ? AND
+            WHERE id <= ? AND updated_at > ? AND secret=? AND
                   ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
             ORDER BY id ASC
-        ''', (since_id, since_time, me['username'], with_user, with_user, me['username'])).fetchall()
+        ''', (since_id, since_time, want_secret, me['username'], with_user, with_user, me['username'])).fetchall()
         updated_messages = [m for m in (visible_message(r, me['username']) for r in upd_rows) if m]
 
     read_up_to_id = 0
@@ -802,16 +833,16 @@ def api_sync():
     if with_user:
         # для сообщений с таймером — при первом прочтении запускаем обратный отсчёт
         rows_to_arm = conn.execute('''SELECT id, ttl_seconds FROM messages
-            WHERE from_user=? AND to_user=? AND read=0 AND ttl_seconds IS NOT NULL AND expire_at IS NULL''',
-            (with_user, me['username'])).fetchall()
+            WHERE from_user=? AND to_user=? AND read=0 AND secret=? AND ttl_seconds IS NOT NULL AND expire_at IS NULL''',
+            (with_user, me['username'], want_secret)).fetchall()
         for row in rows_to_arm:
             exp = (datetime.utcnow() + timedelta(seconds=row['ttl_seconds'])).isoformat() + 'Z'
             conn.execute('UPDATE messages SET expire_at=? WHERE id=?', (exp, row['id']))
-        conn.execute('UPDATE messages SET read=1 WHERE from_user=? AND to_user=? AND read=0',
-                     (with_user, me['username']))
+        conn.execute('UPDATE messages SET read=1 WHERE from_user=? AND to_user=? AND read=0 AND secret=?',
+                     (with_user, me['username'], want_secret))
         conn.commit()
-        row = conn.execute('SELECT MAX(id) AS m FROM messages WHERE from_user=? AND to_user=? AND read=1',
-                            (me['username'], with_user)).fetchone()
+        row = conn.execute('SELECT MAX(id) AS m FROM messages WHERE from_user=? AND to_user=? AND read=1 AND secret=?',
+                            (me['username'], with_user, want_secret)).fetchone()
         read_up_to_id = row['m'] or 0
         ts = last_typing.get((with_user, me['username']))
         typing = bool(ts and time.time() - ts < TYPING_SECONDS)
@@ -840,28 +871,29 @@ def api_open_chat():
     if not me:
         return jsonify({'error': 'unauthorized'}), 401
     with_user = request.args.get('with', '')
+    want_secret = 1 if request.args.get('secret') == '1' else 0
     server_now = now_iso()
     conn = get_db()
     rows = conn.execute('''
         SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
-        WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?)
+        WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=?
         ORDER BY id ASC
-    ''', (me['username'], with_user, with_user, me['username'])).fetchall()
+    ''', (me['username'], with_user, with_user, me['username'], want_secret)).fetchall()
     for r in rows:
         if r['from_user'] == with_user and not r['read'] and r['ttl_seconds'] is not None and not r['expire_at']:
             exp = (datetime.utcnow() + timedelta(seconds=r['ttl_seconds'])).isoformat() + 'Z'
             conn.execute('UPDATE messages SET expire_at=? WHERE id=?', (exp, r['id']))
-    conn.execute('UPDATE messages SET read=1 WHERE from_user=? AND to_user=? AND read=0',
-                 (with_user, me['username']))
+    conn.execute('UPDATE messages SET read=1 WHERE from_user=? AND to_user=? AND read=0 AND secret=?',
+                 (with_user, me['username'], want_secret))
     conn.commit()
     conn.close()
     burn_expired_messages(me['username'], with_user)
     conn = get_db()
     rows = conn.execute('''
         SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
-        WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?)
+        WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=?
         ORDER BY id ASC
-    ''', (me['username'], with_user, with_user, me['username'])).fetchall()
+    ''', (me['username'], with_user, with_user, me['username'], want_secret)).fetchall()
     conn.close()
     messages = [m for m in (visible_message(r, me['username']) for r in rows) if m]
     max_id = max([r['id'] for r in rows], default=0)
@@ -1126,6 +1158,11 @@ PAGE = """
   .profile-viewer-info { padding: 12px 22px; font-size: 14px; line-height: 1.8; color: var(--text); background: var(--panel); }
   .profile-viewer-info b { color: var(--text-dim); font-weight: 500; font-size: 12.5px; display: inline-block; min-width: 130px; }
   #birthdayBanner { background: rgba(255,193,7,0.12); color: #e0a800; font-size: 13px; padding: 10px 16px; text-align: center; }
+  #forwardToolbar { background: var(--panel-raised); padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  #forwardToolbar input { flex: 1; min-width: 0; }
+  #forwardToolbar button, #forwardPreviewBar button { background: var(--accent); color: #1b1204; border: none; border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
+  #forwardCancelBtn, #forwardHideSenderBtn, #forwardPreviewCancel, #forwardPreviewHideSenderBtn { background: var(--panel) !important; color: var(--text-dim) !important; }
+  .fwd-select-badge { position: absolute; bottom: -2px; right: -2px; background: var(--accent); color: #1b1204; font-size: 10px; font-weight: 700; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg); }
   #storageWarningBanner { background: rgba(239,68,68,0.14); color: var(--danger); font-size: 13px; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   #storageWarningBanner button { background: var(--danger); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
   .cleanup-item { display: flex; align-items: center; gap: 10px; padding: 10px 22px; border-bottom: 1px solid var(--border); }
@@ -1279,6 +1316,15 @@ PAGE = """
   </header>
   <div id="birthdayBanner" style="display:none;"></div>
   <div id="storageWarningBanner" style="display:none;"></div>
+  <div id="forwardToolbar" style="display:none;">
+    <div id="forwardToolbarInfo" style="flex:1;"></div>
+    <div id="forwardCaptionWrap" style="display:none; align-items:center; gap:8px;">
+      <input type="text" id="forwardCaptionInput" placeholder="Подпись (необязательно)">
+      <button id="forwardHideSenderBtn" title="Скрыть имя отправителя">☰</button>
+      <button id="forwardSendBtn">Отправить</button>
+    </div>
+    <button id="forwardCancelBtn">✕</button>
+  </div>
   <div class="search-block">
     <div class="search-row">
       <input type="text" id="searchInput" placeholder="Юзернейм собеседника (@nickname)">
@@ -1340,6 +1386,7 @@ PAGE = """
       <input type="checkbox" id="hideForwardCheck">
       Скрыть профиль при пересылке моих сообщений (моё имя будет некликабельным)
     </label>
+    <button id="deleteAccountBtn" class="danger" style="width:100%; margin-top:24px; background:none; border:1px solid var(--danger); color:var(--danger);">Удалить аккаунт</button>
   </div>
 </div>
 
@@ -1362,12 +1409,17 @@ PAGE = """
     <input type="text" id="chatSearchInput" placeholder="Поиск по переписке...">
     <button id="chatSearchCloseBtn">✕</button>
   </div>
+  <div id="messages"></div>
+  <div id="chatSearchNav"><button id="searchPrevBtn">↑</button><span id="searchMatchCount"></span><button id="searchNextBtn">↓</button></div>
   <div id="replyBar" style="display:none;">
     <div class="reply-bar-content"><span class="reply-bar-label">Ответ</span><div id="replyBarText"></div></div>
     <button id="replyBarCancel">✕</button>
   </div>
-  <div id="messages"></div>
-  <div id="chatSearchNav"><button id="searchPrevBtn">↑</button><span id="searchMatchCount"></span><button id="searchNextBtn">↓</button></div>
+  <div id="forwardPreviewBar" style="display:none;">
+    <div class="reply-bar-content"><span class="reply-bar-label">Пересылка</span><div id="forwardPreviewText"></div></div>
+    <button id="forwardPreviewHideSenderBtn" title="Скрыть имя отправителя">☰</button>
+    <button id="forwardPreviewCancel">✕</button>
+  </div>
   <div id="composer">
     <input type="file" id="wallpaperFileInput" accept="image/*" style="display:none;">
     <input type="file" id="photoInput" accept="image/*" multiple style="display:none;">
@@ -1597,8 +1649,28 @@ PAGE = """
     showScreen('loginScreen');
   });
 
+  document.getElementById('deleteAccountBtn').addEventListener('click', () => {
+    const password = prompt('Это удалит твой аккаунт НАВСЕГДА, включая переписки у собеседников (не только у тебя). Введи пароль для подтверждения:');
+    if (password === null) return;
+    confirmOverlay('Точно удалить аккаунт без возможности восстановить?', async () => {
+      const r = await api('/api/delete_account', { method: 'POST', body: { password } });
+      if (r.ok) {
+        stopPolling();
+        localStorage.removeItem('chastota_token');
+        token = null; me = null; currentContact = null; sinceId = 0;
+        showScreen('registerScreen');
+      } else {
+        alert(r.data.error || 'Не получилось удалить аккаунт');
+      }
+    });
+  });
+
+  let pendingForward = null; // {text, attachment_type, attachment_data, attachment_duration, attachment_meta, forwarded_from, hideSender}
+  let forwardMultiSelected = []; // юзернеймы, в порядке выбора
+
   function renderContacts(allContacts) {
     checkBirthdays(allContacts);
+    updateForwardToolbar();
     const contacts = allContacts.filter(c => c.username !== me.username); // Избранное показываем отдельной кнопкой, не дублируем в списке
     const list = document.getElementById('contactsList');
     list.innerHTML = '';
@@ -1615,21 +1687,94 @@ PAGE = """
       const previewLine = draft
         ? '<div class="contact-preview draft-label">[Черновик] ' + escapeHtml(draft) + '</div>'
         : '<div class="contact-preview">' + escapeHtml(c.last_preview || '') + '</div>';
-      item.innerHTML = '<div class="avatar-box">' + avatarHtml(c) + '</div><div style="flex:1; min-width:0;"><div class="contact-name">' + escapeHtml(c.name) + officialBadge(c.official) + pinIcon + '</div>' + previewLine + '</div>' + unreadBadge;
-      item.addEventListener('click', () => openChat(c));
+      const fwdIndex = forwardMultiSelected.indexOf(c.username);
+      const fwdBadge = fwdIndex >= 0 ? '<span class="fwd-select-badge">' + (fwdIndex + 1) + '</span>' : '';
+      item.innerHTML = '<div class="avatar-box" style="position:relative;">' + avatarHtml(c) + fwdBadge + '</div><div style="flex:1; min-width:0;"><div class="contact-name">' + escapeHtml(c.name) + officialBadge(c.official) + pinIcon + '</div>' + previewLine + '</div>' + unreadBadge;
+      item.addEventListener('click', () => {
+        if (pendingForward && forwardMultiSelected.length > 0) {
+          toggleForwardSelect(c.username);
+        } else {
+          openChat(c);
+        }
+      });
       attachLongPressContact(item, c);
       list.appendChild(item);
     });
   }
 
+  function toggleForwardSelect(username) {
+    const idx = forwardMultiSelected.indexOf(username);
+    if (idx >= 0) forwardMultiSelected.splice(idx, 1);
+    else forwardMultiSelected.push(username);
+    renderContacts(contactsCache);
+  }
+
+  function updateForwardToolbar() {
+    const bar = document.getElementById('forwardToolbar');
+    if (!pendingForward) { bar.style.display = 'none'; return; }
+    bar.style.display = 'flex';
+    const info = document.getElementById('forwardToolbarInfo');
+    const captionWrap = document.getElementById('forwardCaptionWrap');
+    if (forwardMultiSelected.length > 0) {
+      info.textContent = 'Выбрано: ' + forwardMultiSelected.length;
+      captionWrap.style.display = 'flex';
+    } else {
+      info.textContent = 'Нажми на чат, чтобы открыть, или зажми — чтобы выбрать сразу нескольких';
+      captionWrap.style.display = 'none';
+    }
+  }
+
+  function clearPendingForward() {
+    pendingForward = null;
+    forwardMultiSelected = [];
+    document.getElementById('forwardCaptionInput').value = '';
+    document.getElementById('forwardPreviewBar').style.display = 'none';
+    updateForwardToolbar();
+    renderContacts(contactsCache);
+  }
+
+  document.getElementById('forwardCancelBtn').addEventListener('click', clearPendingForward);
+  document.getElementById('forwardHideSenderBtn').addEventListener('click', () => {
+    if (pendingForward) pendingForward.hideSender = !pendingForward.hideSender;
+    document.getElementById('forwardHideSenderBtn').style.opacity = pendingForward && pendingForward.hideSender ? '1' : '0.5';
+  });
+  document.getElementById('forwardSendBtn').addEventListener('click', async () => {
+    if (!pendingForward || !forwardMultiSelected.length) return;
+    const caption = document.getElementById('forwardCaptionInput').value.trim();
+    const targets = forwardMultiSelected.slice();
+    const p = pendingForward;
+    for (const username of targets) {
+      const r = await api('/api/send_message', { method: 'POST', body: {
+        to: username, text: caption, attachment_type: p.attachment_type,
+        attachment_data: p.attachment_data, attachment_duration: p.attachment_duration,
+        attachment_meta: p.attachment_meta, forwarded_from: p.hideSender ? null : p.forwarded_from
+      }});
+      if (r.ok && currentContact && currentContact.username === username) {
+        renderMessage(r.data);
+        sinceId = Math.max(sinceId, r.data.id);
+      }
+    }
+    clearPendingForward();
+  });
+
   function attachLongPressContact(item, contact) {
     let timer = null;
-    const start = () => { timer = setTimeout(() => openChatMenu(contact), 500); };
+    const start = () => { timer = setTimeout(() => {
+      if (pendingForward) { toggleForwardSelect(contact.username); }
+      else { openChatMenu(contact); }
+    }, 500); };
     const cancel = () => { if (timer) clearTimeout(timer); };
     item.addEventListener('touchstart', start);
     item.addEventListener('touchend', cancel);
     item.addEventListener('touchmove', cancel);
-    item.addEventListener('contextmenu', (e) => { e.preventDefault(); openChatMenu(contact); });
+    item.addEventListener('mousedown', start);
+    item.addEventListener('mouseup', cancel);
+    item.addEventListener('mouseleave', cancel);
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (pendingForward) { toggleForwardSelect(contact.username); }
+      else { openChatMenu(contact); }
+    });
   }
 
   function openChatMenu(contact) {
@@ -1700,7 +1845,10 @@ PAGE = """
     confirmBtn.addEventListener('click', async () => {
       const everyone = check.checked;
       closeMessageMenu();
-      const r = await api('/api/delete_chat', { method: 'POST', body: { contact: contact.username, everyone } });
+      const r = await api('/api/delete_chat', { method: 'POST', body: { contact: contact.username, everyone, secret: !!contact.is_secret } });
+      if (contact.is_secret) {
+        await api('/api/unset_secret_chat', { method: 'POST', body: { contact: contact.username } });
+      }
       if (r.ok) {
         contactsCache = contactsCache.filter(c => c.username !== contact.username);
         renderContacts(contactsCache);
@@ -1835,1432 +1983,4 @@ PAGE = """
     }
     const r = await api('/api/update_bio', { method: 'POST', body: { bio } });
     me.bio = r.data.bio;
-    await api('/api/update_birthday', { method: 'POST', body: { birthday } });
-    me.birthday = birthday;
-    const privacy_online = document.getElementById('privacySelect').value;
-    await api('/api/update_privacy', { method: 'POST', body: { privacy_online } });
-    me.privacy_online = privacy_online;
-    const hide_forward_link = document.getElementById('hideForwardCheck').checked;
-    await api('/api/update_forward_privacy', { method: 'POST', body: { hide_forward_link } });
-    me.hide_forward_link = hide_forward_link;
-    showScreen('dashScreen');
-  });
-  async function loadMyPhotos() {
-    const list = document.getElementById('myPhotosList');
-    list.innerHTML = '';
-    const r = await api('/api/get_photos?username=' + encodeURIComponent(me.username));
-    if (!r.ok) return;
-    r.data.photos.forEach(p => {
-      const thumb = document.createElement('div');
-      thumb.className = 'my-photo-thumb';
-      thumb.innerHTML = '<img src="' + p.data + '"><button>✕</button>';
-      thumb.querySelector('button').addEventListener('click', async () => {
-        const rr = await api('/api/delete_photo', { method: 'POST', body: { id: p.id } });
-        if (rr.ok) {
-          loadMyPhotos();
-          if (me.avatar_photo === p.data) {
-            me.avatar_photo = null;
-            document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
-          }
-        }
-      });
-      list.appendChild(thumb);
-    });
-  }
-  document.getElementById('avatarFileInput').addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    resizeImage(file, 300).then(async dataUrl => {
-      const r = await api('/api/update_avatar', { method: 'POST', body: { avatar_photo: dataUrl } });
-      me.avatar_photo = r.data.avatar_photo;
-      loadMyPhotos();
-      document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
-    }).catch(() => alert('Не получилось загрузить фото, попробуй другое'));
-  });
-  document.getElementById('avatarRemoveBtn').addEventListener('click', async () => {
-    const r = await api('/api/update_avatar', { method: 'POST', body: { avatar_photo: null } });
-    me.avatar_photo = r.data.avatar_photo;
-    document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
-  });
-  function resizeImage(file, maxSize, quality) {
-    quality = quality || 0.8;
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = reject;
-      reader.onload = () => {
-        const img = new Image();
-        img.onerror = reject;
-        img.onload = () => {
-          let w = img.width, h = img.height;
-          if (w > h && w > maxSize) { h = h * (maxSize / w); w = maxSize; }
-          else if (h > maxSize) { w = w * (maxSize / h); h = maxSize; }
-          const canvas = document.createElement('canvas');
-          canvas.width = w; canvas.height = h;
-          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-          resolve(canvas.toDataURL('image/jpeg', quality));
-        };
-        img.src = reader.result;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
-  // --- Чат ---
-  function draftKey(contact) { return 'chastota_draft_' + me.username + '_' + contact.username; }
-  function saveDraftForCurrent() {
-    if (!currentContact || currentContact.username === 'factbot') return;
-    const text = document.getElementById('textInput').value;
-    if (text.trim()) localStorage.setItem(draftKey(currentContact), text);
-    else localStorage.removeItem(draftKey(currentContact));
-  }
-
-  async function openChat(contact) {
-    saveDraftForCurrent();
-    document.getElementById('undoSnackbar').style.display = 'none';
-    if (undoTimer) clearTimeout(undoTimer);
-    currentContact = contact;
-    document.getElementById('composer').style.display = 'flex';
-    document.getElementById('botActionBar').style.display = 'none';
-    document.getElementById('replyBar').style.display = 'none';
-    replyToMsg = null;
-    closeChatSearch();
-    if (!contactsCache.find(c => c.username === contact.username)) contactsCache.unshift(contact);
-
-    // Если чат секретный и стоит пароль — просим его перед открытием
-    if (contact.is_secret && contact.has_password) {
-      const ok = await promptSecretPassword(contact);
-      if (!ok) return;
-    }
-
-    document.getElementById('chatAvatar').innerHTML = avatarHtml(contact);
-    document.getElementById('chatName').innerHTML = (contact.is_secret ? '🔒 ' : '') + escapeHtml(contact.name) + officialBadge(contact.official);
-    const banner = document.getElementById('secretBanner');
-    if (contact.is_secret) {
-      banner.style.display = 'block';
-      banner.innerHTML = '<b>Секретная частота</b>Пересылка запрещена · доступна отправка с таймером самоуничтожения · настоящее шифрование пока в разработке';
-    } else {
-      banner.style.display = 'none';
-    }
-    renderChatStatus(contact);
-    document.getElementById('chatTyping').textContent = '';
-    document.getElementById('messages').innerHTML = '';
-    applyWallpaper(contact);
-    showScreen('chatScreen');
-    messagesById = {}; lastRenderedDateKey = '';
-    document.getElementById('textInput').value = contact.username === 'factbot' ? '' : (localStorage.getItem(draftKey(contact)) || '');
-    const r = await api('/api/open_chat?with=' + encodeURIComponent(contact.username));
-    r.data.messages.forEach(renderMessage);
-    sinceId = Math.max(sinceId, r.data.max_id);
-    sinceTime = r.data.sync_time || sinceTime;
-  }
-
-  function promptSecretPassword(contact) {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'msg-menu-overlay';
-      overlay.id = 'msgMenuOverlay';
-      const menu = document.createElement('div');
-      menu.className = 'msg-menu';
-      const title = document.createElement('div');
-      title.style.cssText = 'padding:10px 22px; color:var(--text-dim); font-size:13px; text-align:center;';
-      title.textContent = '🔒 Введи пароль от секретного чата';
-      menu.appendChild(title);
-      const input = document.createElement('input');
-      input.type = 'password';
-      input.style.cssText = 'margin:6px 22px 14px; width:calc(100% - 44px);';
-      menu.appendChild(input);
-      const err = document.createElement('div');
-      err.style.cssText = 'color:var(--danger); font-size:12px; padding:0 22px 8px; text-align:center;';
-      menu.appendChild(err);
-      const okBtn = document.createElement('button');
-      okBtn.textContent = 'Открыть';
-      okBtn.addEventListener('click', async () => {
-        const r = await api('/api/unlock_secret_chat', { method: 'POST', body: { contact: contact.username, password: input.value } });
-        if (r.ok) { closeMessageMenu(); resolve(true); } else { err.textContent = 'Неверный пароль'; }
-      });
-      menu.appendChild(okBtn);
-      const cancelBtn = document.createElement('button');
-      cancelBtn.textContent = 'Отмена';
-      cancelBtn.addEventListener('click', () => { closeMessageMenu(); resolve(false); });
-      menu.appendChild(cancelBtn);
-      overlay.appendChild(menu);
-      document.body.appendChild(overlay);
-      input.focus();
-    });
-  }
-
-  // --- Обои чата (пресеты + своё фото), хранятся локально на устройстве ---
-  const WALLPAPER_PRESETS = [
-    { id: 'default', label: 'Обычные', css: '' },
-    { id: 'purple', label: 'Фиолетовый', css: 'linear-gradient(160deg, #2b1055, #7597de)' },
-    { id: 'blue', label: 'Синий', css: 'linear-gradient(160deg, #1e3c72, #2a5298)' },
-    { id: 'pink', label: 'Розовый', css: 'linear-gradient(160deg, #ff9a9e, #fad0c4)' },
-    { id: 'white', label: 'Белый', css: '#ffffff' },
-  ];
-  function wallpaperKey(contact) { return 'chastota_wallpaper_' + me.username + '_' + contact.username; }
-  function applyWallpaper(contact) {
-    const messagesEl = document.getElementById('messages');
-    const raw = localStorage.getItem(wallpaperKey(contact));
-    messagesEl.style.background = '';
-    messagesEl.style.backgroundImage = '';
-    messagesEl.style.backgroundSize = '';
-    messagesEl.style.backgroundPosition = '';
-    if (!raw) return;
-    try {
-      const w = JSON.parse(raw);
-      if (w.type === 'preset') {
-        const preset = WALLPAPER_PRESETS.find(p => p.id === w.id);
-        if (preset) messagesEl.style.background = preset.css;
-      } else if (w.type === 'custom') {
-        messagesEl.style.backgroundImage = 'url(' + w.data + ')';
-        messagesEl.style.backgroundSize = 'cover';
-        messagesEl.style.backgroundPosition = 'center';
-      }
-    } catch (e) {}
-  }
-  function openWallpaperMenu() {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-    const title = document.createElement('div');
-    title.style.cssText = 'padding:10px 22px; color:var(--text-dim); font-size:13px;';
-    title.textContent = 'Выбери обои для этого чата';
-    menu.appendChild(title);
-    const swatchRow = document.createElement('div');
-    swatchRow.style.cssText = 'display:flex; gap:12px; padding:6px 22px 16px; flex-wrap:wrap;';
-    WALLPAPER_PRESETS.forEach(p => {
-      const sw = document.createElement('div');
-      sw.className = 'wallpaper-swatch';
-      sw.style.background = p.css || '#333';
-      sw.title = p.label;
-      sw.addEventListener('click', () => {
-        localStorage.setItem(wallpaperKey(currentContact), JSON.stringify({ type: 'preset', id: p.id }));
-        applyWallpaper(currentContact);
-        closeMessageMenu();
-      });
-      swatchRow.appendChild(sw);
-    });
-    menu.appendChild(swatchRow);
-    const galleryBtn = document.createElement('button');
-    galleryBtn.textContent = 'Своё фото из галереи';
-    galleryBtn.addEventListener('click', () => { document.getElementById('wallpaperFileInput').click(); });
-    menu.appendChild(galleryBtn);
-    const resetBtn = document.createElement('button');
-    resetBtn.textContent = 'Сбросить обои';
-    resetBtn.addEventListener('click', () => {
-      localStorage.removeItem(wallpaperKey(currentContact));
-      applyWallpaper(currentContact);
-      closeMessageMenu();
-    });
-    menu.appendChild(resetBtn);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-  document.getElementById('wallpaperFileInput').addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
-    if (!file || !currentContact) return;
-    resizeImage(file, 1600).then(dataUrl => {
-      localStorage.setItem(wallpaperKey(currentContact), JSON.stringify({ type: 'custom', data: dataUrl }));
-      applyWallpaper(currentContact);
-    }).catch(() => alert('Не получилось загрузить фото'));
-  });
-
-  // --- Поиск по переписке ---
-  let searchMatches = [];
-  let searchMatchIndex = -1;
-  function openChatSearch() {
-    document.getElementById('chatSearchBar').style.display = 'flex';
-    document.getElementById('chatSearchInput').value = '';
-    document.getElementById('chatSearchInput').focus();
-  }
-  function closeChatSearch() {
-    document.getElementById('chatSearchBar').style.display = 'none';
-    document.getElementById('chatSearchNav').style.display = 'none';
-    document.querySelectorAll('.msg.search-highlight').forEach(el => el.classList.remove('search-highlight'));
-    searchMatches = []; searchMatchIndex = -1;
-  }
-  document.getElementById('chatSearchCloseBtn').addEventListener('click', closeChatSearch);
-  document.getElementById('chatSearchInput').addEventListener('input', () => {
-    const q = document.getElementById('chatSearchInput').value.trim().toLowerCase();
-    document.querySelectorAll('.msg.search-highlight').forEach(el => el.classList.remove('search-highlight'));
-    if (!q) { searchMatches = []; document.getElementById('chatSearchNav').style.display = 'none'; return; }
-    searchMatches = Object.values(messagesById)
-      .filter(m => !m.deleted && m.text && m.text.toLowerCase().includes(q))
-      .sort((a, b) => a.id - b.id);
-    searchMatchIndex = searchMatches.length ? searchMatches.length - 1 : -1;
-    document.getElementById('chatSearchNav').style.display = searchMatches.length ? 'flex' : 'none';
-    if (searchMatches.length) jumpToSearchMatch();
-    else document.getElementById('searchMatchCount').textContent = '0';
-  });
-  function jumpToSearchMatch() {
-    document.querySelectorAll('.msg.search-highlight').forEach(el => el.classList.remove('search-highlight'));
-    if (searchMatchIndex < 0 || searchMatchIndex >= searchMatches.length) return;
-    const m = searchMatches[searchMatchIndex];
-    const div = document.querySelector('.msg[data-id="' + m.id + '"]');
-    if (div) { div.scrollIntoView({ behavior: 'smooth', block: 'center' }); div.classList.add('search-highlight'); }
-    document.getElementById('searchMatchCount').textContent = (searchMatchIndex + 1) + '/' + searchMatches.length;
-  }
-  document.getElementById('searchPrevBtn').addEventListener('click', () => {
-    if (!searchMatches.length) return;
-    searchMatchIndex = (searchMatchIndex - 1 + searchMatches.length) % searchMatches.length;
-    jumpToSearchMatch();
-  });
-  document.getElementById('searchNextBtn').addEventListener('click', () => {
-    if (!searchMatches.length) return;
-    searchMatchIndex = (searchMatchIndex + 1) % searchMatches.length;
-    jumpToSearchMatch();
-  });
-
-  // --- Очистить историю ---
-  function openClearHistoryMenu() {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-    const checkRow = document.createElement('label');
-    checkRow.className = 'menu-check-row';
-    const check = document.createElement('input'); check.type = 'checkbox';
-    checkRow.appendChild(check);
-    const checkLabel = document.createElement('span'); checkLabel.textContent = 'Очистить у всех';
-    checkRow.appendChild(checkLabel);
-    menu.appendChild(checkRow);
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'danger';
-    confirmBtn.textContent = 'Очистить историю';
-    confirmBtn.addEventListener('click', async () => {
-      const everyone = check.checked;
-      closeMessageMenu();
-      const r = await api('/api/clear_history', { method: 'POST', body: { contact: currentContact.username, everyone } });
-      if (r.ok) { document.getElementById('messages').innerHTML = ''; messagesById = {}; lastRenderedDateKey = ''; }
-      else alert('Не получилось очистить историю');
-    });
-    menu.appendChild(confirmBtn);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  // --- Секретный чат: приглашение / настройки ---
-  function openSecretChatMenu() {
-    closeMessageMenu();
-    if (!currentContact.is_secret) { showSecretInviteBanner(); return; }
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const renameBtn = document.createElement('button');
-    renameBtn.textContent = 'Название и аватар для маскировки';
-    renameBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const name = prompt('Как назвать этот чат для маскировки (видно только тебе):', currentContact.name);
-      if (name === null) return;
-      const avatar = prompt('Эмодзи-аватарка для маскировки (например 📷 или 🎮):', currentContact.avatar || '😀');
-      if (avatar === null) return;
-      const r = await api('/api/set_secret_chat', { method: 'POST', body: {
-        contact: currentContact.username, disguise_name: name || null, disguise_avatar: avatar || null } });
-      if (r.ok) { openChat(await refetchContact(currentContact.username)); }
-    });
-    menu.appendChild(renameBtn);
-
-    const passBtn = document.createElement('button');
-    passBtn.textContent = currentContact.has_password ? 'Изменить пароль' : 'Установить пароль';
-    passBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const pass = prompt('Новый пароль для этого чата (оставь пустым, чтобы убрать пароль):');
-      if (pass === null) return;
-      await api('/api/set_secret_chat', { method: 'POST', body: { contact: currentContact.username, password: pass } });
-      currentContact.has_password = !!pass;
-    });
-    menu.appendChild(passBtn);
-
-    const offBtn = document.createElement('button');
-    offBtn.className = 'danger';
-    offBtn.textContent = 'Отключить секретный режим';
-    offBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const r = await api('/api/unset_secret_chat', { method: 'POST', body: { contact: currentContact.username } });
-      if (r.ok) { openChat(await refetchContact(currentContact.username)); }
-    });
-    menu.appendChild(offBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  async function refetchContact(username) {
-    const r = await api('/api/find_user?username=' + encodeURIComponent(username));
-    return r.data.found ? r.data.user : currentContact;
-  }
-
-  function showSecretInviteBanner() {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-    const text = document.createElement('div');
-    text.style.cssText = 'padding:16px 22px; font-size:14px; line-height:1.7;';
-    text.innerHTML = 'Вы пригласили <b>' + escapeHtml(currentContact.name) + '</b> в секретный чат.<br><br>' +
-      'Секретные чаты — это:<br>🔒 Оконечное шифрование<br>🔒 Никаких следов на серверах<br>' +
-      '🔒 Удаление по таймеру<br>🔒 Запрет пересылки третьим лицам<br><br>' +
-      '<span style="color:var(--text-dim); font-size:12px;">⚠ Пока это черновая версия: настоящее шифрование ещё не подключено (сообщения хранятся на сервере как обычно), скриншоты браузер тоже никак не блокирует. Таймер и запрет пересылки уже работают по-настоящему.</span>';
-    menu.appendChild(text);
-    const createBtn = document.createElement('button');
-    createBtn.textContent = 'Создать секретный чат';
-    createBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const r = await api('/api/set_secret_chat', { method: 'POST', body: { contact: currentContact.username } });
-      if (r.ok) { openChat(await refetchContact(currentContact.username)); }
-    });
-    menu.appendChild(createBtn);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  // --- Кнопка ⋮ в шапке чата ---
-  document.getElementById('chatMenuBtn').addEventListener('click', () => {
-    if (!currentContact) return;
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const searchBtn = document.createElement('button');
-    searchBtn.textContent = 'Поиск';
-    searchBtn.addEventListener('click', () => { closeMessageMenu(); openChatSearch(); });
-    menu.appendChild(searchBtn);
-
-    const wallBtn = document.createElement('button');
-    wallBtn.textContent = 'Изменить обои';
-    wallBtn.addEventListener('click', () => { closeMessageMenu(); openWallpaperMenu(); });
-    menu.appendChild(wallBtn);
-
-    const secretBtn = document.createElement('button');
-    secretBtn.textContent = currentContact.is_secret ? 'Настройки секретного чата' : 'Секретный чат';
-    secretBtn.addEventListener('click', () => { closeMessageMenu(); openSecretChatMenu(); });
-    menu.appendChild(secretBtn);
-
-    const clearBtn = document.createElement('button');
-    clearBtn.textContent = 'Очистить историю';
-    clearBtn.addEventListener('click', () => { closeMessageMenu(); openClearHistoryMenu(); });
-    menu.appendChild(clearBtn);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'danger';
-    delBtn.textContent = 'Удалить чат';
-    delBtn.addEventListener('click', () => { closeMessageMenu(); openDeleteChatMenu(currentContact); });
-    menu.appendChild(delBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  });
-
-  function renderChatStatus(contact) {
-    const st = statusInfo(contact);
-    document.getElementById('chatUsername').innerHTML = '@' + escapeHtml(contact.username) +
-      (st.text ? ' · <span class="' + st.cls + '">' + st.text + '</span>' : '');
-  }
-  document.getElementById('backBtn').addEventListener('click', () => { saveDraftForCurrent(); currentContact = null; showScreen('dashScreen'); });
-
-  // ЗАДЕЛ НА БУДУЩЕЕ: здесь при отправке (send/sendAttachment) для is_secret-чатов нужно будет
-  // шифровать msg.text через Web Crypto API (SubtleCrypto, AES-GCM с ключом по протоколу вроде
-  // Diffie-Hellman между двумя устройствами) перед отправкой на сервер, и расшифровывать
-  // на клиенте при получении — сервер должен видеть только абракадабру.
-
-  document.getElementById('renameBtn').addEventListener('click', async () => {
-    if (!currentContact) return;
-    const newName = prompt('Как назвать этот контакт (видно только тебе):', currentContact.name);
-    if (newName === null) return;
-    const r = await api('/api/set_alias', { method: 'POST', body: { contact: currentContact.username, alias: newName.trim() } });
-    currentContact.name = r.data.name;
-    document.getElementById('chatName').innerHTML = escapeHtml(currentContact.name) + officialBadge(currentContact.official);
-    const idx = contactsCache.findIndex(c => c.username === r.data.contact);
-    if (idx !== -1) contactsCache[idx].name = r.data.name;
-  });
-
-  function formatTime(t) {
-    const d = new Date(t);
-    if (isNaN(d.getTime())) return t; // на случай старого формата времени
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-  const RU_MONTHS = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
-  function dateKey(t) {
-    const d = new Date(t);
-    if (isNaN(d.getTime())) return '';
-    return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
-  }
-  function formatDateSeparator(t) {
-    const d = new Date(t);
-    if (isNaN(d.getTime())) return '';
-    const now = new Date();
-    let s = d.getDate() + ' ' + RU_MONTHS[d.getMonth()];
-    if (d.getFullYear() !== now.getFullYear()) s += ' ' + d.getFullYear();
-    return s;
-  }
-  function insertDateSeparatorIfNeeded(msg) {
-    const key = dateKey(msg.time);
-    if (!key || key === lastRenderedDateKey) return;
-    lastRenderedDateKey = key;
-    const sep = document.createElement('div');
-    sep.className = 'date-separator';
-    sep.textContent = formatDateSeparator(msg.time);
-    document.getElementById('messages').appendChild(sep);
-  }
-  function renderMessage(msg) {
-    if (msg.deleted) return; // удалённое "у всех" сообщение просто не показываем при первом рендере
-    messagesById[msg.id] = msg;
-    insertDateSeparatorIfNeeded(msg);
-    const div = document.createElement('div');
-    const isOwn = msg.from_user === me.username;
-    div.className = 'msg' + (isOwn ? ' own' : '');
-    div.dataset.id = msg.id;
-    fillBubble(div, msg, isOwn);
-    attachLongPress(div, msg);
-    document.getElementById('messages').appendChild(div);
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-  }
-
-  function fillBubble(div, msg, isOwn) {
-    const ticks = isOwn ? ('<span class="ticks' + (msg.read ? ' read' : '') + '">' + (msg.read ? '✓✓' : '✓') + '</span>') : '';
-    const editedTag = msg.edited ? '<span class="edited-tag">изменено</span>' : '';
-    let bodyHtml = '';
-    if (msg.attachment_type === 'photo' && msg.attachment_data) {
-      bodyHtml = '<img class="msg-photo" src="' + msg.attachment_data + '">' + (msg.text ? '<div style="margin-top:6px;">' + escapeHtml(msg.text) + '</div>' : '');
-    } else if (msg.attachment_type === 'voice' && msg.attachment_data) {
-      const mins = Math.floor((msg.attachment_duration || 0) / 60);
-      const secs = String((msg.attachment_duration || 0) % 60).padStart(2, '0');
-      bodyHtml = '<div class="voice-msg"><button class="voice-play-btn">▶</button><span class="voice-duration">' + mins + ':' + secs + '</span><button class="voice-speed-btn">1x</button></div>';
-    } else if (msg.attachment_type === 'file' && msg.attachment_data) {
-      let meta = {}; try { meta = JSON.parse(msg.attachment_meta || '{}'); } catch (e) {}
-      const sizeKb = meta.size ? Math.max(1, Math.round(meta.size / 1024)) + ' КБ' : '';
-      bodyHtml = '<a class="file-msg" href="' + msg.attachment_data + '" download="' + escapeHtml(meta.name || 'file') + '">📄 <div><div class="file-name">' + escapeHtml(meta.name || 'Файл') + '</div><div class="file-size">' + sizeKb + '</div></div></a>';
-    } else if (msg.attachment_type === 'location') {
-      let meta = {}; try { meta = JSON.parse(msg.attachment_meta || '{}'); } catch (e) {}
-      const mapUrl = 'https://www.openstreetmap.org/?mlat=' + meta.lat + '&mlon=' + meta.lng + '#map=15/' + meta.lat + '/' + meta.lng;
-      bodyHtml = '<a class="location-msg" href="' + mapUrl + '" target="_blank" rel="noopener">📍 <div><div class="file-name">Геопозиция</div><div class="file-size">Открыть на карте</div></div></a>';
-    } else {
-      bodyHtml = escapeHtml(msg.text);
-    }
-    let prefixHtml = '';
-    if (msg.forwarded_from) {
-      const displayName = msg.forwarded_from_name || msg.forwarded_from;
-      if (msg.forwarded_from_hidden) {
-        prefixHtml += '<div class="forwarded-tag">Переслано от <span class="fwd-name-hidden">' + escapeHtml(displayName) + '</span></div>';
-      } else {
-        prefixHtml += '<div class="forwarded-tag">Переслано от <span class="fwd-name-link">' + escapeHtml(displayName) + '</span></div>';
-      }
-    }
-    if (msg.reply_to_id && messagesById[msg.reply_to_id]) {
-      const q = messagesById[msg.reply_to_id];
-      const qText = q.text || (q.attachment_type === 'photo' ? '📷 Фото' : q.attachment_type === 'voice' ? '🎤 Голосовое' : q.attachment_type === 'file' ? '📄 Файл' : q.attachment_type === 'location' ? '📍 Геопозиция' : '');
-      prefixHtml += '<div class="reply-quote">' + escapeHtml(qText.slice(0, 80)) + '</div>';
-    }
-    div.innerHTML = '<div class="meta">' + formatTime(msg.time) + editedTag + ticks + '</div>' +
-      '<div class="bubble">' + prefixHtml + bodyHtml + '</div>';
-    if (msg.forwarded_from) {
-      const nameEl = div.querySelector('.fwd-name-link, .fwd-name-hidden');
-      nameEl.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (msg.forwarded_from_hidden) {
-          alert('Аккаунт скрыт пользователем');
-          return;
-        }
-        const r = await api('/api/find_user?username=' + encodeURIComponent(msg.forwarded_from));
-        if (r.data.found) openProfileViewer(r.data.user);
-        else alert('Аккаунт скрыт пользователем');
-      });
-    }
-    if (msg.attachment_type === 'photo' && msg.attachment_data) {
-      div.querySelector('.msg-photo').addEventListener('click', () => {
-        document.getElementById('photoPreviewImg').src = msg.attachment_data;
-        document.getElementById('photoPreviewOverlay').style.display = 'flex';
-      });
-    }
-    if (msg.attachment_type === 'voice' && msg.attachment_data) {
-      div.querySelector('.voice-play-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        playVoice(e.target, msg.attachment_data);
-      });
-      const speedBtn = div.querySelector('.voice-speed-btn');
-      speedBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const speeds = [1, 1.5, 2];
-        const cur = parseFloat(speedBtn.dataset.speed || '1');
-        const next = speeds[(speeds.indexOf(cur) + 1) % speeds.length];
-        speedBtn.dataset.speed = next;
-        speedBtn.textContent = next + 'x';
-        const playBtn = div.querySelector('.voice-play-btn');
-        if (playBtn._audio) playBtn._audio.playbackRate = next;
-      });
-    }
-    if (needsTranslateButton(msg.text)) {
-      const btn = document.createElement('button');
-      btn.className = 'translate-btn';
-      btn.textContent = 'Перевести';
-      btn.addEventListener('click', (e) => { e.stopPropagation(); translateMessage(div, msg); });
-      div.querySelector('.bubble').appendChild(btn);
-    }
-  }
-
-  // Обновление уже отрисованного сообщения (правка) или удаление из DOM
-  function applyUpdatedMessage(msg) {
-    messagesById[msg.id] = msg;
-    const div = document.querySelector('.msg[data-id="' + msg.id + '"]');
-    if (!div) { if (!msg.deleted) renderMessage(msg); return; }
-    if (msg.deleted) { div.remove(); return; }
-    const isOwn = msg.from_user === me.username;
-    fillBubble(div, msg, isOwn);
-    attachLongPress(div, msg);
-  }
-
-  // --- Грубое определение "нужен ли перевод": сравниваем алфавит сообщения с ожидаемым для языка устройства ---
-  function needsTranslateButton(text) {
-    const hasLetters = /[a-zA-Zа-яА-ЯёЁ\u00C0-\u024F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0600-\u06FF]/.test(text);
-    if (!hasLetters) return false;
-    const deviceIsRu = (navigator.language || 'ru').toLowerCase().startsWith('ru');
-    const hasCyrillic = /[а-яА-ЯёЁ]/.test(text);
-    const hasLatin = /[a-zA-Z]/.test(text);
-    // ru-устройство ожидает кириллицу; остальные устройства (en/fr/de/...) ожидаем латиницу.
-    // Если в тексте нет ни одной "родной" буквы устройства (китайский/японский/корейский/арабский и т.д.
-    // тоже подпадают сюда, т.к. не содержат ни кириллицы, ни латиницы) — предлагаем перевод.
-    if (deviceIsRu && !hasCyrillic) return true;
-    if (!deviceIsRu && !hasLatin) return true;
-    return false;
-  }
-
-  function deviceLangCode() {
-    return (navigator.language || 'ru').split('-')[0].toLowerCase();
-  }
-
-  async function translateMessage(div, msg) {
-    const btn = div.querySelector('.translate-btn');
-    if (btn) btn.textContent = 'Перевожу...';
-    const tl = deviceLangCode();
-    try {
-      // sl=auto — сервис сам определяет исходный язык (китайский, французский, любой)
-      const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
-        encodeURIComponent(tl) + '&dt=t&q=' + encodeURIComponent(msg.text);
-      const res = await fetch(url);
-      const data = await res.json();
-      const translated = data && data[0] ? data[0].map(part => part[0]).join('') : null;
-      if (btn) btn.remove();
-      if (translated) {
-        const t = document.createElement('div');
-        t.className = 'translation';
-        t.textContent = translated;
-        div.querySelector('.bubble').appendChild(t);
-      }
-    } catch (e) {
-      if (btn) btn.textContent = 'Не получилось перевести';
-    }
-  }
-
-
-  // --- Long-press / контекстное меню сообщения + свайп влево = быстрый ответ ---
-  function attachLongPress(div, msg) {
-    let timer = null;
-    let startX = 0, startY = 0, swiping = false;
-    const start = (e) => {
-      timer = setTimeout(() => openMessageMenu(msg), 500);
-      const t = e.touches ? e.touches[0] : e;
-      startX = t.clientX; startY = t.clientY; swiping = false;
-    };
-    const move = (e) => {
-      const t = e.touches ? e.touches[0] : e;
-      const dx = t.clientX - startX, dy = t.clientY - startY;
-      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
-        if (timer) { clearTimeout(timer); timer = null; }
-        if (dx < 0) {
-          swiping = true;
-          div.style.transform = 'translateX(' + Math.max(dx, -70) + 'px)';
-        }
-      }
-    };
-    const end = () => {
-      if (timer) clearTimeout(timer);
-      if (swiping) {
-        div.style.transition = 'transform 0.2s';
-        div.style.transform = '';
-        setTimeout(() => { div.style.transition = ''; }, 200);
-      }
-      swiping = false;
-    };
-    div.addEventListener('touchstart', start, { passive: true });
-    div.addEventListener('touchmove', move, { passive: true });
-    div.addEventListener('touchend', (e) => {
-      const t = e.changedTouches[0];
-      const dx = t.clientX - startX;
-      end();
-      if (dx < -55) startReply(msg);
-    });
-    div.addEventListener('contextmenu', (e) => { e.preventDefault(); openMessageMenu(msg); });
-  }
-
-  // --- Ответ на сообщение ---
-  let replyToMsg = null;
-  function startReply(msg) {
-    replyToMsg = msg;
-    const preview = msg.text || (msg.attachment_type === 'photo' ? '📷 Фото' : msg.attachment_type === 'voice' ? '🎤 Голосовое' : '');
-    document.getElementById('replyBarText').textContent = preview.slice(0, 90);
-    document.getElementById('replyBar').style.display = 'flex';
-    document.getElementById('textInput').focus();
-  }
-  document.getElementById('replyBarCancel').addEventListener('click', () => {
-    replyToMsg = null;
-    document.getElementById('replyBar').style.display = 'none';
-  });
-
-  // --- Пересылка сообщения ---
-  function openForwardMenu(msg) {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-    const titleRow = document.createElement('div');
-    titleRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:10px 22px;';
-    const title = document.createElement('div');
-    title.style.cssText = 'color:var(--text-dim); font-size:13px;';
-    title.textContent = 'Переслать кому (можно выбрать нескольких):';
-    titleRow.appendChild(title);
-    const menuIconBtn = document.createElement('button');
-    menuIconBtn.textContent = '☰';
-    menuIconBtn.style.cssText = 'background:none; border:none; color:var(--text-dim); font-size:16px; cursor:pointer; padding:4px 8px;';
-    titleRow.appendChild(menuIconBtn);
-    menu.appendChild(titleRow);
-
-    const hideRow = document.createElement('label');
-    hideRow.className = 'menu-check-row';
-    hideRow.style.display = 'none';
-    const hideCheck = document.createElement('input');
-    hideCheck.type = 'checkbox';
-    hideRow.appendChild(hideCheck);
-    const hideLabel = document.createElement('span');
-    hideLabel.textContent = 'Скрыть имя отправителя';
-    hideRow.appendChild(hideLabel);
-    menu.appendChild(hideRow);
-    menuIconBtn.addEventListener('click', () => {
-      hideRow.style.display = hideRow.style.display === 'none' ? 'flex' : 'none';
-    });
-
-    const selected = new Set();
-    const listWrap = document.createElement('div');
-    listWrap.style.cssText = 'max-height:280px; overflow-y:auto;';
-    contactsCache.filter(c => c.username !== 'factbot').forEach(c => {
-      const row = document.createElement('label');
-      row.className = 'menu-check-row';
-      const check = document.createElement('input');
-      check.type = 'checkbox';
-      check.addEventListener('change', () => {
-        if (check.checked) selected.add(c.username); else selected.delete(c.username);
-        sendFwdBtn.textContent = selected.size ? 'Переслать (' + selected.size + ')' : 'Переслать';
-        sendFwdBtn.disabled = selected.size === 0;
-      });
-      row.appendChild(check);
-      const label = document.createElement('span');
-      label.textContent = c.name;
-      row.appendChild(label);
-      listWrap.appendChild(row);
-    });
-    menu.appendChild(listWrap);
-
-    const sendFwdBtn = document.createElement('button');
-    sendFwdBtn.textContent = 'Переслать';
-    sendFwdBtn.disabled = true;
-    sendFwdBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const originalSender = msg.forwarded_from || msg.from_user; // при повторной пересылке сохраняем настоящего автора
-      const hideSender = hideCheck.checked;
-      for (const username of selected) {
-        const r = await api('/api/send_message', { method: 'POST', body: {
-          to: username, text: msg.text || '', attachment_type: msg.attachment_type || null,
-          attachment_data: msg.attachment_data || null, attachment_duration: msg.attachment_duration || null,
-          attachment_meta: msg.attachment_meta || null,
-          forwarded_from: hideSender ? null : originalSender
-        }});
-        if (r.ok && currentContact && currentContact.username === username) {
-          renderMessage(r.data);
-          sinceId = Math.max(sinceId, r.data.id);
-        }
-      }
-    });
-    menu.appendChild(sendFwdBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  // --- Свайп вправо по фону чата = назад в меню переписок ---
-  (function attachChatSwipeBack() {
-    const area = document.getElementById('messages');
-    let startX = 0, startY = 0, active = false;
-    area.addEventListener('touchstart', (e) => {
-      if (e.target.closest('.msg')) { active = false; return; }
-      const t = e.touches[0]; startX = t.clientX; startY = t.clientY; active = true;
-    }, { passive: true });
-    area.addEventListener('touchend', (e) => {
-      if (!active) return;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - startX, dy = t.clientY - startY;
-      if (dx > 90 && Math.abs(dy) < 60) { saveDraftForCurrent(); currentContact = null; showScreen('dashScreen'); }
-      active = false;
-    });
-  })();
-
-  function closeMessageMenu() {
-    const ov = document.getElementById('msgMenuOverlay');
-    if (ov) ov.remove();
-  }
-
-  function openMessageMenu(msg) {
-    closeMessageMenu();
-    const isOwn = msg.from_user === me.username;
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const replyBtn = document.createElement('button');
-    replyBtn.textContent = 'Ответить';
-    replyBtn.addEventListener('click', () => { closeMessageMenu(); startReply(msg); });
-    menu.appendChild(replyBtn);
-
-    if (!(currentContact && currentContact.is_secret)) {
-      const fwdBtn = document.createElement('button');
-      fwdBtn.textContent = 'Переслать';
-      fwdBtn.addEventListener('click', () => { closeMessageMenu(); openForwardMenu(msg); });
-      menu.appendChild(fwdBtn);
-    }
-
-    if (isOwn) {
-      const editBtn = document.createElement('button');
-      editBtn.textContent = 'Изменить';
-      editBtn.addEventListener('click', () => { closeMessageMenu(); editMessage(msg); });
-      menu.appendChild(editBtn);
-    }
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'danger';
-    delBtn.textContent = 'Удалить';
-    delBtn.addEventListener('click', () => { closeMessageMenu(); openDeleteMenu(msg); });
-    menu.appendChild(delBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  function openDeleteMenu(msg) {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const checkRow = document.createElement('label');
-    checkRow.className = 'menu-check-row';
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.id = 'deleteEveryoneCheck';
-    checkRow.appendChild(check);
-    const checkLabel = document.createElement('span');
-    checkLabel.textContent = 'Удалить у всех';
-    checkRow.appendChild(checkLabel);
-    menu.appendChild(checkRow);
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'danger';
-    confirmBtn.textContent = 'Удалить';
-    confirmBtn.addEventListener('click', async () => {
-      const everyone = check.checked;
-      closeMessageMenu();
-      const r = await api('/api/delete_message', { method: 'POST', body: { id: msg.id, everyone } });
-      if (r.ok) {
-        if (everyone) {
-          applyUpdatedMessage(Object.assign({}, msg, { deleted: true }));
-        } else {
-          const div = document.querySelector('.msg[data-id="' + msg.id + '"]');
-          if (div) div.remove();
-        }
-      } else {
-        alert('Не получилось удалить сообщение');
-      }
-    });
-    menu.appendChild(confirmBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  async function editMessage(msg) {
-    const newText = prompt('Изменить сообщение:', msg.text);
-    if (newText === null || !newText.trim() || newText === msg.text) return;
-    const r = await api('/api/edit_message', { method: 'POST', body: { id: msg.id, text: newText.trim() } });
-    if (r.ok) {
-      applyUpdatedMessage(Object.assign({}, msg, { text: newText.trim(), edited: true }));
-    } else {
-      alert('Не получилось изменить сообщение');
-    }
-  }
-
-  async function send() {
-    const input = document.getElementById('textInput');
-    const text = input.value.trim();
-    if (!text || !currentContact) return;
-    if (currentContact.is_secret) { openTimerPicker((ttl) => doSend(text, ttl)); return; }
-    doSend(text, null);
-  }
-  async function doSend(text, ttl) {
-    const input = document.getElementById('textInput');
-    const sendBtn = document.getElementById('sendBtn');
-    sendBtn.disabled = true;
-    const body = { to: currentContact.username, text };
-    if (replyToMsg) body.reply_to_id = replyToMsg.id;
-    if (ttl) body.ttl_seconds = ttl;
-    const r = await api('/api/send_message', { method: 'POST', body });
-    sendBtn.disabled = false;
-    if (r.ok) {
-      input.value = '';
-      localStorage.removeItem(draftKey(currentContact));
-      replyToMsg = null;
-      document.getElementById('replyBar').style.display = 'none';
-      renderMessage(r.data);
-      sinceId = Math.max(sinceId, r.data.id);
-      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
-    } else if (r.data && r.data.error === 'disk_full') {
-      openStorageCleanup(true);
-    } else {
-      alert('Не получилось отправить — проверь связь и попробуй ещё раз. Текст сообщения сохранён в поле.');
-    }
-  }
-  document.getElementById('sendBtn').addEventListener('click', send);
-  document.getElementById('textInput').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-  document.getElementById('textInput').addEventListener('input', () => { if (currentContact) saveDraftForCurrent(); });
-
-  // --- Отмена отправки (5 секунд) ---
-  let undoTimer = null;
-  function showSendUndoSnackbar(msgId) {
-    const bar = document.getElementById('undoSnackbar');
-    if (undoTimer) clearTimeout(undoTimer);
-    bar.style.display = 'flex';
-    bar.dataset.msgId = msgId;
-    undoTimer = setTimeout(() => { bar.style.display = 'none'; }, 5000);
-  }
-  document.getElementById('undoSnackbarBtn').addEventListener('click', () => {
-    const bar = document.getElementById('undoSnackbar');
-    const msgId = parseInt(bar.dataset.msgId, 10);
-    bar.style.display = 'none';
-    if (undoTimer) clearTimeout(undoTimer);
-    confirmOverlay('Вы точно хотите удалить?', async () => {
-      const r = await api('/api/delete_message', { method: 'POST', body: { id: msgId, everyone: true } });
-      if (r.ok) {
-        const div = document.querySelector('.msg[data-id="' + msgId + '"]');
-        if (div) div.remove();
-      }
-    });
-  });
-  function confirmOverlay(text, onYes) {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-    const title = document.createElement('div');
-    title.style.cssText = 'padding:14px 22px; text-align:center; font-size:14px;';
-    title.textContent = text;
-    menu.appendChild(title);
-    const yesBtn = document.createElement('button');
-    yesBtn.className = 'danger';
-    yesBtn.textContent = 'Да';
-    yesBtn.addEventListener('click', () => { closeMessageMenu(); onYes(); });
-    menu.appendChild(yesBtn);
-    const noBtn = document.createElement('button');
-    noBtn.textContent = 'Нет';
-    noBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(noBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  // --- Крутилка таймера самоуничтожения (только секретные чаты), 3-20 секунд ---
-  function openTimerPicker(onConfirm) {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-    const title = document.createElement('div');
-    title.style.cssText = 'padding:10px 22px 0; color:var(--text-dim); font-size:13px; text-align:center;';
-    title.textContent = 'Удалить после прочтения через:';
-    menu.appendChild(title);
-    let value = 10;
-    const wheel = document.createElement('div');
-    wheel.className = 'timer-wheel';
-    const minusBtn = document.createElement('button'); minusBtn.textContent = '−';
-    const valDiv = document.createElement('div'); valDiv.className = 'timer-value'; valDiv.textContent = value + ' сек';
-    const plusBtn = document.createElement('button'); plusBtn.textContent = '+';
-    minusBtn.addEventListener('click', () => { value = Math.max(3, value - 1); valDiv.textContent = value + ' сек'; });
-    plusBtn.addEventListener('click', () => { value = Math.min(20, value + 1); valDiv.textContent = value + ' сек'; });
-    wheel.appendChild(minusBtn); wheel.appendChild(valDiv); wheel.appendChild(plusBtn);
-    menu.appendChild(wheel);
-    const sendBtn = document.createElement('button');
-    sendBtn.textContent = 'Отправить с таймером';
-    sendBtn.addEventListener('click', () => { closeMessageMenu(); onConfirm(value); });
-    menu.appendChild(sendBtn);
-    const noTimerBtn = document.createElement('button');
-    noTimerBtn.textContent = 'Без таймера';
-    noTimerBtn.addEventListener('click', () => { closeMessageMenu(); onConfirm(null); });
-    menu.appendChild(noTimerBtn);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  async function sendAttachment(type, dataUrl, duration, meta) {
-    if (!currentContact) return;
-    const body = { to: currentContact.username, text: '', attachment_type: type,
-      attachment_data: dataUrl || null, attachment_duration: duration || null,
-      attachment_meta: meta ? JSON.stringify(meta) : null };
-    if (replyToMsg) body.reply_to_id = replyToMsg.id;
-    const r = await api('/api/send_message', { method: 'POST', body });
-    if (r.ok) {
-      replyToMsg = null;
-      document.getElementById('replyBar').style.display = 'none';
-      renderMessage(r.data);
-      sinceId = Math.max(sinceId, r.data.id);
-      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
-    } else if (r.data && r.data.error === 'disk_full') {
-      openStorageCleanup(true);
-    } else {
-      alert('Не получилось отправить вложение');
-    }
-    return r;
-  }
-
-  // --- Фото в сообщении ---
-  document.getElementById('attachBtn').addEventListener('click', () => {
-    if (!currentContact) return;
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const galleryBtn = document.createElement('button');
-    galleryBtn.textContent = '🖼 Галерея';
-    galleryBtn.addEventListener('click', () => { closeMessageMenu(); document.getElementById('photoInput').click(); });
-    menu.appendChild(galleryBtn);
-
-    const fileBtn = document.createElement('button');
-    fileBtn.textContent = '📄 Файл';
-    fileBtn.addEventListener('click', () => { closeMessageMenu(); document.getElementById('fileInput').click(); });
-    menu.appendChild(fileBtn);
-
-    const locBtn = document.createElement('button');
-    locBtn.textContent = '📍 Геопозиция';
-    locBtn.addEventListener('click', () => { closeMessageMenu(); sendLocation(); });
-    menu.appendChild(locBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  });
-
-  document.getElementById('photoInput').addEventListener('change', async (e) => {
-    let files = Array.from(e.target.files);
-    e.target.value = '';
-    if (!files.length) return;
-    if (files.length > 50) { alert('Можно отправить не больше 50 фото за раз — беру первые 50.'); files = files.slice(0, 50); }
-    for (const file of files) {
-      try {
-        const dataUrl = await resizeImage(file, 900, 0.55);
-        await sendAttachment('photo', dataUrl);
-      } catch (e2) { /* пропускаем битый файл, продолжаем остальные */ }
-    }
-  });
-
-  document.getElementById('fileInput').addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { alert('Файл слишком большой (максимум 8 МБ) — бесплатный хостинг Частоты ограничен по месту на диске.'); return; }
-    const reader = new FileReader();
-    reader.onload = () => sendAttachment('file', reader.result, null, { name: file.name, size: file.size });
-    reader.onerror = () => alert('Не получилось прочитать файл');
-    reader.readAsDataURL(file);
-  });
-
-  function sendLocation() {
-    if (!navigator.geolocation) { alert('Геолокация не поддерживается этим браузером'); return; }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => sendAttachment('location', null, null, { lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => alert('Не получилось определить геопозицию — проверь разрешения браузера')
-    );
-  }
-
-  document.getElementById('photoPreviewOverlay').addEventListener('click', () => {
-    document.getElementById('photoPreviewOverlay').style.display = 'none';
-  });
-
-  // --- Просмотр профиля контакта (клик по аватарке в шапке чата) ---
-  let profilePhotos = [];
-  let profilePhotoIndex = 0;
-  async function openProfileViewer(user) {
-    const overlay = document.getElementById('profileViewerOverlay');
-    overlay.style.display = 'flex';
-    document.getElementById('profileViewerImg').src = '';
-    const infoEl = document.getElementById('profileViewerInfo');
-    let birthdayText = 'не указан';
-    if (user.birthday) {
-      const bd = new Date(user.birthday + 'T00:00:00');
-      if (!isNaN(bd.getTime())) birthdayText = bd.getDate() + ' ' + RU_MONTHS[bd.getMonth()];
-    }
-    infoEl.innerHTML =
-      '<div><b>Имя пользователя:</b> @' + escapeHtml(user.username) + '</div>' +
-      '<div><b>День рождения:</b> ' + birthdayText + '</div>' +
-      '<div><b>О себе:</b> ' + (user.bio ? escapeHtml(user.bio) : 'не указано') + '</div>';
-    const r = await api('/api/get_photos?username=' + encodeURIComponent(user.username));
-    profilePhotos = (r.ok && r.data.photos.length) ? r.data.photos : (user.avatar_photo ? [{ data: user.avatar_photo }] : []);
-    profilePhotoIndex = 0;
-    showProfilePhoto();
-  }
-  function showProfilePhoto() {
-    const nav = profilePhotos.length > 1;
-    document.getElementById('profilePhotoPrev').style.display = nav ? 'block' : 'none';
-    document.getElementById('profilePhotoNext').style.display = nav ? 'block' : 'none';
-    if (!profilePhotos.length) {
-      document.getElementById('profileViewerImg').src = '';
-      document.getElementById('profilePhotoDownload').style.display = 'none';
-      return;
-    }
-    const photo = profilePhotos[profilePhotoIndex];
-    document.getElementById('profileViewerImg').src = photo.data;
-    const dl = document.getElementById('profilePhotoDownload');
-    dl.href = photo.data;
-    dl.style.display = 'block';
-  }
-  document.getElementById('profilePhotoPrev').addEventListener('click', () => {
-    if (!profilePhotos.length) return;
-    profilePhotoIndex = (profilePhotoIndex - 1 + profilePhotos.length) % profilePhotos.length;
-    showProfilePhoto();
-  });
-  document.getElementById('profilePhotoNext').addEventListener('click', () => {
-    if (!profilePhotos.length) return;
-    profilePhotoIndex = (profilePhotoIndex + 1) % profilePhotos.length;
-    showProfilePhoto();
-  });
-  (function attachProfileSwipe() {
-    const area = document.getElementById('profileViewerPhotoArea');
-    let startX = 0;
-    area.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; }, { passive: true });
-    area.addEventListener('touchend', (e) => {
-      const dx = e.changedTouches[0].clientX - startX;
-      if (Math.abs(dx) < 40 || !profilePhotos.length) return;
-      profilePhotoIndex = dx < 0
-        ? (profilePhotoIndex + 1) % profilePhotos.length
-        : (profilePhotoIndex - 1 + profilePhotos.length) % profilePhotos.length;
-      showProfilePhoto();
-    });
-  })();
-  document.getElementById('profileViewerClose').addEventListener('click', () => {
-    document.getElementById('profileViewerOverlay').style.display = 'none';
-  });
-  document.getElementById('savedChatBtn').addEventListener('click', () => {
-    openChat({ username: me.username, name: 'Избранное', avatar: '⭐', avatar_photo: null,
-      online: false, blocked_by_me: false, is_secret: false, official: false });
-  });
-  document.getElementById('supportBtn').addEventListener('click', async () => {
-    if (me.username === 'support') { alert('Ты сам и есть поддержка :)'); return; }
-    const r = await api('/api/find_user?username=support');
-    if (r.ok && r.data.found) {
-      openChat(r.data.user);
-    } else {
-      alert('Аккаунт поддержки ещё не создан. Заведи аккаунт с юзернеймом "support" (или смени юзернейм своего аккаунта в настройках), чтобы отвечать людям отсюда.');
-    }
-  });
-  document.getElementById('chatAvatar').addEventListener('click', () => {
-    if (currentContact) openProfileViewer(currentContact);
-  });
-
-  // --- Шторка "у контакта сегодня день рождения" на главном экране ---
-  function checkBirthdays(contacts) {
-    const now = new Date();
-    const todayKey = now.getMonth() + '-' + now.getDate();
-    const matches = contacts.filter(c => {
-      if (!c.birthday) return false;
-      const bd = new Date(c.birthday + 'T00:00:00');
-      return !isNaN(bd.getTime()) && (bd.getMonth() + '-' + bd.getDate()) === todayKey;
-    });
-    const banner = document.getElementById('birthdayBanner');
-    if (!matches.length) { banner.style.display = 'none'; return; }
-    banner.style.display = 'block';
-    banner.innerHTML = matches.map(c => 'У ' + escapeHtml(c.name) + ' сегодня день рождения🎂').join('<br>');
-  }
-
-  // --- Место на диске (общее на весь хостинг Частоты, не только твоё) ---
-  function formatBytes(n) {
-    if (n < 1024) return n + ' Б';
-    if (n < 1024 * 1024) return Math.round(n / 1024) + ' КБ';
-    return (n / (1024 * 1024)).toFixed(1) + ' МБ';
-  }
-  async function checkStorageWarning() {
-    const r = await api('/api/storage_usage');
-    if (!r.ok) return;
-    const banner = document.getElementById('storageWarningBanner');
-    const ratio = r.data.approx_bytes / r.data.assumed_quota_bytes;
-    if (ratio < 0.8) { banner.style.display = 'none'; return; }
-    banner.style.display = 'flex';
-    banner.innerHTML = '<span>⚠ Место на диске почти закончилось (' + formatBytes(r.data.approx_bytes) + ' занято)</span>';
-    const btn = document.createElement('button');
-    btn.textContent = 'Очистить';
-    btn.addEventListener('click', () => openStorageCleanup(false));
-    banner.appendChild(btn);
-  }
-
-  let cleanupSelected = new Set();
-  async function openStorageCleanup(forced) {
-    closeMessageMenu();
-    cleanupSelected = new Set();
-    const overlay = document.getElementById('storageCleanupOverlay');
-    document.getElementById('storageCleanupTitle').textContent = forced
-      ? 'На вашем диске закончилась память'
-      : 'Освободить место';
-    document.getElementById('storageCleanupSubtitle').textContent =
-      'Выбери фото/файлы для удаления. Они удалятся у всех участников чата — иначе место физически не освободится.';
-    overlay.style.display = 'flex';
-    const listEl = document.getElementById('storageCleanupList');
-    listEl.innerHTML = 'Загрузка...';
-    const r = await api('/api/list_attachments');
-    listEl.innerHTML = '';
-    if (!r.ok || !r.data.items.length) {
-      listEl.innerHTML = '<div style="padding:16px 22px; color:var(--text-dim); font-size:13px;">Вложений не найдено</div>';
-      return;
-    }
-    r.data.items.forEach(it => {
-      const row = document.createElement('label');
-      row.className = 'cleanup-item';
-      const check = document.createElement('input');
-      check.type = 'checkbox';
-      check.addEventListener('change', () => {
-        if (check.checked) cleanupSelected.add(it.id); else cleanupSelected.delete(it.id);
-        const delBtn = document.getElementById('storageCleanupDeleteBtn');
-        delBtn.disabled = cleanupSelected.size === 0;
-        delBtn.textContent = cleanupSelected.size ? 'Удалить выбранные (' + cleanupSelected.size + ')' : 'Удалить выбранные';
-      });
-      row.appendChild(check);
-      const icon = it.attachment_type === 'photo' ? '📷' : it.attachment_type === 'voice' ? '🎤' : it.attachment_type === 'file' ? '📄' : '📍';
-      const info = document.createElement('div');
-      info.className = 'cleanup-item-info';
-      info.innerHTML = icon + ' с @' + escapeHtml(it.other) + '<div class="cleanup-item-size">' + formatBytes(it.approx_bytes) + '</div>';
-      row.appendChild(info);
-      listEl.appendChild(row);
-    });
-  }
-  document.getElementById('storageCleanupCloseBtn').addEventListener('click', () => {
-    document.getElementById('storageCleanupOverlay').style.display = 'none';
-  });
-  document.getElementById('storageCleanupDeleteBtn').addEventListener('click', async () => {
-    if (!cleanupSelected.size) return;
-    const r = await api('/api/bulk_delete_attachments', { method: 'POST', body: { ids: Array.from(cleanupSelected) } });
-    if (r.ok) {
-      document.getElementById('storageCleanupOverlay').style.display = 'none';
-      checkStorageWarning();
-    } else {
-      alert('Не получилось удалить');
-    }
-  });
-
-  // --- Голосовые сообщения (удержание кнопки микрофона) ---
-  let mediaRecorder = null;
-  let recordedChunks = [];
-  let recordStartTime = 0;
-  const voiceBtn = document.getElementById('voiceBtn');
-
-  async function startRecording() {
-    if (!currentContact || mediaRecorder) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordedChunks = [];
-      mediaRecorder = new MediaRecorder(stream);
-      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
-        const duration = Math.round((Date.now() - recordStartTime) / 1000);
-        voiceBtn.classList.remove('recording');
-        mediaRecorder = null;
-        if (duration < 1) return; // случайное касание
-        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-        const reader = new FileReader();
-        reader.onload = () => sendAttachment('voice', reader.result, duration);
-        reader.readAsDataURL(blob);
-      };
-      mediaRecorder.start();
-      recordStartTime = Date.now();
-      voiceBtn.classList.add('recording');
-    } catch (e) {
-      alert('Нет доступа к микрофону — разреши его в настройках браузера');
-    }
-  }
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
-  }
-  voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
-  voiceBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
-  voiceBtn.addEventListener('mousedown', startRecording);
-  voiceBtn.addEventListener('mouseup', stopRecording);
-  voiceBtn.addEventListener('mouseleave', stopRecording);
-
-  function playVoice(btn, dataUrl) {
-    if (btn._audio && !btn._audio.paused) { btn._audio.pause(); btn._audio.currentTime = 0; btn.textContent = '▶'; return; }
-    if (!btn._audio) {
-      btn._audio = new Audio(dataUrl);
-      btn._audio.addEventListener('ended', () => { btn.textContent = '▶'; });
-      const speedBtn = btn.parentElement ? btn.parentElement.querySelector('.voice-speed-btn') : null;
-      if (speedBtn) btn._audio.playbackRate = parseFloat(speedBtn.dataset.speed || '1');
-    }
-    btn._audio.play();
-    btn.textContent = '⏸';
-  }
-
-  let lastTypingSent = 0;
-  document.getElementById('textInput').addEventListener('input', () => {
-    if (!currentContact) return;
-    const now = Date.now();
-    if (now - lastTypingSent > 1500) {
-      lastTypingSent = now;
-      api('/api/typing', { method: 'POST', body: { to: currentContact.username } });
-    }
-  });
-
-  // --- Опрос сервера (замена WebSocket) ---
-  function startPolling() {
-    stopPolling();
-    pollTimer = setInterval(() => { if (!document.hidden) pollOnce(); }, 5000);
-    pollOnce();
-  }
-  function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
-
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && token) pollOnce();
-  });
-
-  async function pollOnce() {
-    if (!token) return;
-    const withParam = currentContact ? '&with=' + encodeURIComponent(currentContact.username) : '';
-    const timeParam = currentContact && sinceTime ? '&since_time=' + encodeURIComponent(sinceTime) : '';
-    const r = await api('/api/sync?since_id=' + sinceId + withParam + timeParam);
-    if (!r.ok) return;
-    contactsCache = r.data.contacts;
-    if (document.getElementById('dashScreen').classList.contains('active')) renderContacts(contactsCache);
-
-    r.data.new_messages.forEach(m => {
-      if (currentContact && document.getElementById('chatScreen').classList.contains('active') &&
-          ((m.from_user === currentContact.username && m.to_user === me.username) ||
-           (m.from_user === me.username && m.to_user === currentContact.username))) {
-        if (!document.querySelector('.msg[data-id="' + m.id + '"]')) renderMessage(m);
-      }
-    });
-    (r.data.updated_messages || []).forEach(m => {
-      if (currentContact && document.getElementById('chatScreen').classList.contains('active') &&
-          ((m.from_user === currentContact.username && m.to_user === me.username) ||
-           (m.from_user === me.username && m.to_user === currentContact.username))) {
-        applyUpdatedMessage(m);
-      }
-    });
-    if (r.data.max_id > sinceId) sinceId = r.data.max_id;
-    if (r.data.sync_time) sinceTime = r.data.sync_time;
-
-    if (currentContact) {
-      document.querySelectorAll('#messages .msg.own').forEach(el => {
-        if (parseInt(el.dataset.id) <= r.data.read_up_to_id) {
-          const t = el.querySelector('.ticks');
-          if (t) { t.textContent = '✓✓'; t.classList.add('read'); }
-        }
-      });
-      document.getElementById('chatTyping').textContent = r.data.typing ? 'печатает...' : '';
-      const updated = contactsCache.find(c => c.username === currentContact.username);
-      if (updated) { currentContact.online = updated.online; currentContact.last_active = updated.last_active; renderChatStatus(currentContact); }
-    }
-  }
-</script>
-</body>
-</html>
-"""
-
-
-@app.route('/')
-def index():
-    return render_template_string(PAGE)
-
-
-if __name__ == '__main__':
-    print("Чат запущен! Открой в браузере: http://localhost:5000")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    await api('/api/update_birthday', { method: 'POST', 
