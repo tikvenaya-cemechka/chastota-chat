@@ -96,6 +96,11 @@ def init_db():
             pass
     # у старых сообщений updated_at пустой — заполняем временем отправки
     conn.execute("UPDATE messages SET updated_at = time WHERE updated_at IS NULL")
+    # индексы — без них SQLite перебирает всю таблицу сообщений на каждый запрос,
+    # именно из-за этого чат грузился долго
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_from_to ON messages(from_user, to_user)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_to_from ON messages(to_user, from_user)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_id ON messages(id)')
     conn.commit()
     conn.close()
 
@@ -873,13 +878,14 @@ def api_open_chat():
     with_user = request.args.get('with', '')
     want_secret = 1 if request.args.get('secret') == '1' else 0
     server_now = now_iso()
+    PAGE_SIZE = 40
     conn = get_db()
-    rows = conn.execute('''
-        SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
+    # лёгкий проход — только для простановки "прочитано" и запуска таймеров, без тяжёлых вложений
+    light_rows = conn.execute('''
+        SELECT id, from_user, read, ttl_seconds, expire_at FROM messages
         WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=?
-        ORDER BY id ASC
     ''', (me['username'], with_user, with_user, me['username'], want_secret)).fetchall()
-    for r in rows:
+    for r in light_rows:
         if r['from_user'] == with_user and not r['read'] and r['ttl_seconds'] is not None and not r['expire_at']:
             exp = (datetime.utcnow() + timedelta(seconds=r['ttl_seconds'])).isoformat() + 'Z'
             conn.execute('UPDATE messages SET expire_at=? WHERE id=?', (exp, r['id']))
@@ -889,15 +895,54 @@ def api_open_chat():
     conn.close()
     burn_expired_messages(me['username'], with_user)
     conn = get_db()
+    # тяжёлый проход — только последние PAGE_SIZE сообщений (со вложениями), а не вся история разом
     rows = conn.execute('''
         SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
         WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=?
-        ORDER BY id ASC
-    ''', (me['username'], with_user, with_user, me['username'], want_secret)).fetchall()
+        ORDER BY id DESC LIMIT ?
+    ''', (me['username'], with_user, with_user, me['username'], want_secret, PAGE_SIZE)).fetchall()
+    rows = list(reversed(rows))
+    has_more = False
+    if rows:
+        older = conn.execute('''
+            SELECT 1 FROM messages
+            WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=? AND id < ?
+            LIMIT 1
+        ''', (me['username'], with_user, with_user, me['username'], want_secret, rows[0]['id'])).fetchone()
+        has_more = bool(older)
     conn.close()
     messages = [m for m in (visible_message(r, me['username']) for r in rows) if m]
-    max_id = max([r['id'] for r in rows], default=0)
-    return jsonify({'messages': messages, 'max_id': max_id, 'sync_time': server_now})
+    max_id = max([r['id'] for r in light_rows], default=0)
+    return jsonify({'messages': messages, 'max_id': max_id, 'sync_time': server_now, 'has_more': has_more})
+
+
+@app.route('/api/load_older_messages')
+def api_load_older_messages():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    with_user = request.args.get('with', '')
+    want_secret = 1 if request.args.get('secret') == '1' else 0
+    before_id = int(request.args.get('before_id', 0))
+    PAGE_SIZE = 40
+    conn = get_db()
+    rows = conn.execute('''
+        SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
+        WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=? AND id < ?
+        ORDER BY id DESC LIMIT ?
+    ''', (me['username'], with_user, with_user, me['username'], want_secret, before_id, PAGE_SIZE)).fetchall()
+    rows = list(reversed(rows))
+    has_more = False
+    if rows:
+        older = conn.execute('''
+            SELECT 1 FROM messages
+            WHERE ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?)) AND secret=? AND id < ?
+            LIMIT 1
+        ''', (me['username'], with_user, with_user, me['username'], want_secret, rows[0]['id'])).fetchone()
+        has_more = bool(older)
+    conn.close()
+    messages = [m for m in (visible_message(r, me['username']) for r in rows) if m]
+    return jsonify({'messages': messages, 'has_more': has_more})
 
 
 @app.route('/api/update_bio', methods=['POST'])
@@ -1104,8 +1149,12 @@ PAGE = """
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  .screen { position: fixed; inset: 0; display: none; flex-direction: column; background: var(--bg); }
+  .screen { position: fixed; inset: 0; display: none; flex-direction: column; background: var(--bg); opacity: 0; transform: translateY(6px) scale(0.99); transition: opacity 0.22s ease, transform 0.22s ease; }
   .screen.active { display: flex; }
+  .screen.active.visible { opacity: 1; transform: translateY(0) scale(1); }
+  * { scroll-behavior: smooth; }
+  button, .contact-item, .msg, .icon-btn { transition: background 0.15s ease, opacity 0.15s ease, transform 0.12s ease; }
+  .contact-item:active, .icon-btn:active, button:active { transform: scale(0.97); }
   .center { align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; }
   .splash-logo { font-size: 30px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
   .splash-fact { font-size: 15px; color: var(--text-dim); max-width: 320px; line-height: 1.55; min-height: 60px; }
@@ -1154,9 +1203,14 @@ PAGE = """
   #botActionBar { padding: 14px 20px; border-top: 1px solid var(--border); background: var(--panel); }
   #botActionBar button { width: 100%; background: var(--accent); color: #1b1204; border: none; border-radius: 10px; padding: 12px; font-weight: 600; cursor: pointer; }
   .date-separator { text-align: center; font-size: 12px; color: var(--text-dim); background: var(--panel-raised); padding: 4px 12px; border-radius: 10px; margin: 10px auto; width: fit-content; }
-  .profile-nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.4); color: #fff; border: none; width: 40px; height: 40px; border-radius: 50%; font-size: 22px; cursor: pointer; z-index: 5; }
-  .profile-viewer-info { padding: 12px 22px; font-size: 14px; line-height: 1.8; color: var(--text); background: var(--panel); }
-  .profile-viewer-info b { color: var(--text-dim); font-weight: 500; font-size: 12.5px; display: inline-block; min-width: 130px; }
+  .profile-nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.45); color: #fff; border: none; width: 42px; height: 42px; border-radius: 50%; font-size: 22px; cursor: pointer; z-index: 5; backdrop-filter: blur(4px); }
+  .profile-viewer-info { padding: 18px 24px 22px; font-size: 14.5px; line-height: 2; color: var(--text); background: var(--panel); border-radius: 22px 22px 0 0; margin-top: -18px; position: relative; z-index: 2; }
+  .profile-viewer-info b { color: var(--text-dim); font-weight: 500; font-size: 12.5px; display: block; margin-bottom: 1px; }
+  #profileViewerOverlay { align-items: stretch !important; justify-content: flex-start !important; background: #000 !important; opacity: 0; transition: opacity 0.25s ease; }
+  #profileViewerOverlay.visible { opacity: 1; }
+  #profileViewerPhotoArea { background: #000; min-height: 55vh; }
+  #profileViewerClose { width: calc(100% - 40px); margin: 0 20px 20px; }
+  #profileCloseTop { position: absolute; top: 16px; left: 16px; z-index: 6; background: rgba(0,0,0,0.45); color: #fff; border: none; width: 38px; height: 38px; border-radius: 50%; font-size: 18px; cursor: pointer; backdrop-filter: blur(4px); }
   #birthdayBanner { background: rgba(255,193,7,0.12); color: #e0a800; font-size: 13px; padding: 10px 16px; text-align: center; }
   #forwardToolbar { background: var(--panel-raised); padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; }
   #forwardToolbar input { flex: 1; min-width: 0; }
@@ -1227,14 +1281,17 @@ PAGE = """
   #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 4px; }
   .msg { max-width: 78%; animation: rise 0.18s ease-out; padding: 2px 0; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-  .msg .meta { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+  .msg .meta { display: none; } /* время теперь внутри пузыря, см. .bubble-time */
   .ticks { margin-left: 5px; color: var(--text-dim); }
   .ticks.read { color: #3ba7f5; }
-  .msg .bubble { background: var(--panel-raised); border-radius: 4px 12px 12px 12px; padding: 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
+  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); border-radius: 4px 12px 12px 12px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
   .msg.own { align-self: flex-end; }
-  .msg.own .meta { text-align: right; }
   .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 12px 4px 12px 12px; }
-  .msg .edited-tag { font-size: 10px; color: var(--text-dim); margin-left: 5px; }
+  .bubble-time { position: absolute; right: 10px; bottom: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; pointer-events: none; }
+  .msg.own .bubble-time { color: rgba(27,18,4,0.65); }
+  .bubble-time .ticks.read { color: #3ba7f5; }
+  .msg.own .bubble-time .ticks.read { color: #1b1204; }
+  .msg .edited-tag { font-size: 9.5px; color: var(--text-dim); }
   .msg .translate-btn { display: block; margin-top: 4px; font-size: 11px; color: var(--signal); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; }
   .msg .translation { margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(0,0,0,0.15); font-size: 13.5px; font-style: italic; opacity: 0.9; }
   .msg-menu-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 50; display: flex; align-items: flex-end; justify-content: center; }
@@ -1248,6 +1305,9 @@ PAGE = """
   .composer-icon-btn.recording { background: #c0392b; color: #fff; animation: pulse 1s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
   .msg .bubble img.msg-photo { max-width: 220px; border-radius: 10px; display: block; margin-top: 4px; cursor: pointer; }
+  .bubble.has-photo { padding: 6px 6px 6px 6px; }
+  .bubble.has-photo .bubble-time { background: rgba(0,0,0,0.45); color: #fff; padding: 2px 6px; border-radius: 8px; right: 12px; bottom: 12px; }
+  .bubble.has-photo .bubble-time .ticks.read { color: #7ec8ff; }
   .voice-msg { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
   .file-msg, .location-msg { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; font-size: 24px; margin-top: 4px; }
   .file-msg .file-name, .location-msg .file-name { font-size: 13.5px; font-weight: 600; }
@@ -1386,6 +1446,10 @@ PAGE = """
       <input type="checkbox" id="hideForwardCheck">
       Скрыть профиль при пересылке моих сообщений (моё имя будет некликабельным)
     </label>
+    <label style="display:flex; align-items:center; gap:10px; margin-top:16px; font-size:13px;">
+      <input type="checkbox" id="factsEnabledCheck" checked>
+      Показывать интересные факты при запуске
+    </label>
     <button id="deleteAccountBtn" class="danger" style="width:100%; margin-top:24px; background:none; border:1px solid var(--danger); color:var(--danger);">Удалить аккаунт</button>
   </div>
 </div>
@@ -1451,12 +1515,13 @@ PAGE = """
 </div>
 <div id="profileViewerOverlay" class="msg-menu-overlay" style="display:none; flex-direction:column;">
   <div id="profileViewerPhotoArea" style="position:relative; flex:1; display:flex; align-items:center; justify-content:center;">
+    <button id="profileCloseTop">✕</button>
     <button id="profilePhotoPrev" class="profile-nav-arrow" style="left:10px;">‹</button>
-    <img id="profileViewerImg" style="max-width:92%; max-height:70vh; border-radius:10px; object-fit:contain;">
+    <img id="profileViewerImg" style="max-width:100%; max-height:100%; object-fit:contain;">
     <button id="profilePhotoNext" class="profile-nav-arrow" style="right:10px;">›</button>
   </div>
   <div id="profileViewerInfo" class="profile-viewer-info"></div>
-  <div style="display:flex; gap:10px; padding:14px 20px;">
+  <div style="display:flex; gap:10px; padding:0 20px 20px;">
     <a id="profilePhotoDownload" download="photo.jpg" style="flex:1;"><button style="width:100%;">Скачать фото</button></a>
     <button id="profileViewerClose">Закрыть</button>
   </div>
@@ -1488,8 +1553,10 @@ PAGE = """
   });
 
   function showScreen(id) {
-    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
+    document.querySelectorAll('.screen').forEach(s => { s.classList.remove('active'); s.classList.remove('visible'); });
+    const el = document.getElementById(id);
+    el.classList.add('active');
+    requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('visible')));
   }
   function escapeHtml(str) {
     const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
@@ -1561,6 +1628,87 @@ PAGE = """
     'А вы знали? Самая быстрая рыба, парусник, способна разгоняться до 110 км/ч.',
     'А вы знали? Кокосовая пальма может вырасти прямо на пляже из плода, унесённого волнами за сотни километров.',
     'А вы знали? Земля — единственная известная планета, где вода существует в жидком, твёрдом и газообразном состоянии одновременно.',
+    'А вы знали? Улитка может спать до трёх лет подряд.',
+    'А вы знали? Сердце креветки находится у неё в голове.',
+    'А вы знали? Отпечатки языка у коал уникальны, почти как отпечатки пальцев у человека.',
+    'А вы знали? На Плутоне снег голубого цвета.',
+    'А вы знали? Кошки почти никогда не мяукают друг другу — этот звук они используют в основном для общения с людьми.',
+    'А вы знали? Эйфелева башня летом становится выше почти на 15 см из-за теплового расширения металла.',
+    'А вы знали? У акул нет костей — их скелет состоит из хряща.',
+    'А вы знали? Один взрослый лось может нырять на глубину до 6 метров в поисках водных растений.',
+    'А вы знали? Первое в мире фото было сделано в 1826 году и выдержка составляла около 8 часов.',
+    'А вы знали? Муравьи никогда не спят — вместо этого они делают короткие паузы для отдыха.',
+    'А вы знали? Самая длинная река в мире — Нил — течёт через 11 стран Африки.',
+    'А вы знали? У пингвинов есть железы, которые выделяют масло для водонепроницаемости перьев.',
+    'А вы знали? В одном кубическом сантиметре воздуха на уровне моря около 25 квинтиллионов молекул.',
+    'А вы знали? Гепард способен разогнаться от 0 до 100 км/ч быстрее большинства спортивных автомобилей.',
+    'А вы знали? Венера — единственная планета Солнечной системы, вращающаяся по часовой стрелке.',
+    'А вы знали? У слонов одна из самых долгих беременностей среди млекопитающих — почти 22 месяца.',
+    'А вы знали? Мозг осьминога распределён — две трети нейронов находятся не в голове, а в щупальцах.',
+    'А вы знали? Самый первый компьютерный вирус был написан в 1971 году просто как эксперимент.',
+    'А вы знали? Бамбук — самое быстрорастущее растение на Земле, некоторые виды растут до метра в сутки.',
+    'А вы знали? У жирафа язык длиной до 50 см и тёмно-фиолетового цвета — это защищает его от солнечных ожогов.',
+    'А вы знали? Первый автомобильный номерной знак появился в конце XIX века во Франции.',
+    'А вы знали? Морские коньки — единственные животные, у которых беременность вынашивает самец.',
+    'А вы знали? Сатурн можно было бы поместить в ванну — он менее плотный, чем вода.',
+    'А вы знали? Человеческое сердце за сутки перекачивает около 7500 литров крови.',
+    'А вы знали? Медузы существуют на Земле дольше динозавров — более 500 миллионов лет.',
+    'А вы знали? Первый в мире светофор появился в Лондоне в 1868 году и работал на газе.',
+    'А вы знали? У некоторых видов пауков паутина прочнее кевлара на единицу веса.',
+    'А вы знали? Один день на Меркурии длится дольше, чем его год.',
+    'А вы знали? Панды проводят до 14 часов в день за поеданием бамбука.',
+    'А вы знали? Первый в мире электрический светофор с автоматическим переключением появился в 1920-х годах в США.',
+    'А вы знали? В Тихом океане есть подводная гора выше Эвереста, если считать от основания.',
+    'А вы знали? Слоны — единственные животные, которые не умеют прыгать.',
+    'А вы знали? У колибри сердце бьётся до 1200 раз в минуту во время полёта.',
+    'А вы знали? Самый долгий зафиксированный полёт бумажного самолётика длился почти 30 секунд.',
+    'А вы знали? Луна медленно удаляется от Земли — примерно на 3,8 см в год.',
+    'А вы знали? У осьминогов синяя кровь из-за содержания меди, а не железа.',
+    'А вы знали? Первый в истории автомобильный круиз-контроль изобрёл слепой инженер в 1948 году.',
+    'А вы знали? Кораллы — это живые организмы, а не растения или камни.',
+    'А вы знали? Земля вращается чуть медленнее из-за приливного трения от Луны — сутки удлиняются на миллисекунды за столетие.',
+    'А вы знали? Скорлупа страусиного яйца выдерживает вес взрослого человека.',
+    'А вы знали? У некоторых видов лягушек кровь зимой почти полностью замерзает, а весной они снова оживают.',
+    'А вы знали? Первый компьютерный "баг" в буквальном смысле был настоящим мотыльком, застрявшим в реле в 1947 году.',
+    'А вы знали? Земная атмосфера защищает нас от миллионов метеоритов ежедневно — большинство сгорает, не долетая до земли.',
+    'А вы знали? У кита горбача песни могут длиться до 30 минут и меняются каждый год.',
+    'А вы знали? Материк Антарктида технически считается пустыней — там очень мало осадков.',
+    'А вы знали? У человека столько же костей в шее, сколько у жирафа — семь.',
+    'А вы знали? Первый в мире автомобильный ремень безопасности запатентовали ещё в 1885 году.',
+    'А вы знали? Пчёлы способны узнавать человеческие лица по характерным чертам.',
+    'А вы знали? Самая горячая точка на Земле — Долина Смерти в США, где зафиксировано почти 57°C.',
+    'А вы знали? Летучие мыши — единственные млекопитающие, способные к настоящему полёту, а не просто планированию.',
+    'А вы знали? В горах Тибета есть озёра настолько солёные, что в них почти невозможно утонуть.',
+    'А вы знали? Изначально кетчуп в XIX веке продавался как лекарство от расстройства желудка.',
+    'А вы знали? У бабочек монарх есть встроенный "компас" — они ориентируются по положению солнца.',
+    'А вы знали? Самый маленький автомобиль в мире официально признан Книгой рекордов Гиннесса — его высота меньше полуметра.',
+    'А вы знали? Дождевые черви могут дышать через кожу — у них нет лёгких.',
+    'А вы знали? Марс имеет самую высокую гору в Солнечной системе и самый большой каньон.',
+    'А вы знали? Кошки способны издавать более 100 разных звуков, а собаки — около 10.',
+    'А вы знали? Первую в мире "пробку" зафиксировали ещё во времена Древнего Рима — там даже запрещали повозки днём.',
+    'А вы знали? У некоторых видов медуз нет ни мозга, ни сердца, ни глаз, но они прекрасно плавают и охотятся.',
+    'А вы знали? Сажая одно дерево, за его жизнь можно получить кислород примерно для двух человек в год.',
+    'А вы знали? Земля — не идеальный шар, а немного сплюснута у полюсов и "выпирает" на экваторе.',
+    'А вы знали? У некоторых пород собак нюх настолько силён, что они способны распознавать заболевания по запаху.',
+    'А вы знали? Первое зафиксированное дорожное происшествие с автомобилем произошло в 1770-х годах во Франции.',
+    'А вы знали? Сова способна поворачивать голову почти на 270 градусов благодаря особому строению шеи.',
+    'А вы знали? Общая длина всех кровеносных сосудов в теле человека — около 100 000 километров.',
+    'А вы знали? В некоторых регионах Японии выращивают арбузы квадратной формы для удобства хранения.',
+    'А вы знали? У жирафов сердце весит около 11 килограммов и создаёт огромное давление, чтобы качать кровь к голове.',
+    'А вы знали? Первый автомобильный "стеклоочиститель" — дворники — изобрела женщина в 1903 году.',
+    'А вы знали? В некоторых пещерах можно найти кристаллы такого размера, что человек кажется рядом с ними крошечным.',
+    'А вы знали? Морские выдры держатся за руки во время сна, чтобы не унесло течением.',
+    'А вы знали? Планета Юпитер имеет самый быстрый оборот вокруг своей оси среди всех планет Солнечной системы.',
+    'А вы знали? У человека отпечатки языка так же уникальны, как и отпечатки пальцев.',
+    'А вы знали? Некоторые виды деревьев способны "общаться" друг с другом через грибковые сети в почве.',
+    'А вы знали? Самый первый в мире дорожный знак "стоп" появился в США в 1915 году.',
+    'А вы знали? Крокодилы не могут высунуть язык — он прикреплён к нижней части пасти.',
+    'А вы знали? У осьминогов есть способность менять не только цвет, но и текстуру кожи для маскировки.',
+    'А вы знали? Самая долгая гроза в истории наблюдений длилась почти 60 часов без перерыва.',
+    'А вы знали? У пчёл шесть глаз — два сложных и три простых.',
+    'А вы знали? Первый в мире автомобильный радиоприёмник появился в конце 1920-х годов.',
+    'А вы знали? Гигантские кальмары имеют самые большие глаза среди всех живых существ — размером с футбольный мяч.',
+    'А вы знали? Половина всего кислорода на Земле производится океаническим планктоном, а не лесами.',
   ];
   function pickRandomFact() {
     return FACTS[Math.floor(Math.random() * FACTS.length)];
@@ -1569,8 +1717,15 @@ PAGE = """
   let splashTargetScreen = 'registerScreen';
 
   window.addEventListener('load', async () => {
-    document.getElementById('splashFact').textContent = pickRandomFact();
-    const minWait = new Promise(resolve => setTimeout(resolve, 1800));
+    const factsEnabled = localStorage.getItem('chastota_facts_enabled') !== '0';
+    const factEl = document.getElementById('splashFact');
+    if (factsEnabled) {
+      factEl.textContent = pickRandomFact();
+      factEl.style.display = 'block';
+    } else {
+      factEl.style.display = 'none';
+    }
+    const minWait = new Promise(resolve => setTimeout(resolve, factsEnabled ? 1800 : 150));
     const authCheck = (async () => {
       if (token) {
         const r = await api('/api/me');
@@ -1713,274 +1868,4 @@ PAGE = """
     const bar = document.getElementById('forwardToolbar');
     if (!pendingForward) { bar.style.display = 'none'; return; }
     bar.style.display = 'flex';
-    const info = document.getElementById('forwardToolbarInfo');
-    const captionWrap = document.getElementById('forwardCaptionWrap');
-    if (forwardMultiSelected.length > 0) {
-      info.textContent = 'Выбрано: ' + forwardMultiSelected.length;
-      captionWrap.style.display = 'flex';
-    } else {
-      info.textContent = 'Нажми на чат, чтобы открыть, или зажми — чтобы выбрать сразу нескольких';
-      captionWrap.style.display = 'none';
-    }
-  }
-
-  function clearPendingForward() {
-    pendingForward = null;
-    forwardMultiSelected = [];
-    document.getElementById('forwardCaptionInput').value = '';
-    document.getElementById('forwardPreviewBar').style.display = 'none';
-    updateForwardToolbar();
-    renderContacts(contactsCache);
-  }
-
-  document.getElementById('forwardCancelBtn').addEventListener('click', clearPendingForward);
-  document.getElementById('forwardHideSenderBtn').addEventListener('click', () => {
-    if (pendingForward) pendingForward.hideSender = !pendingForward.hideSender;
-    document.getElementById('forwardHideSenderBtn').style.opacity = pendingForward && pendingForward.hideSender ? '1' : '0.5';
-  });
-  document.getElementById('forwardSendBtn').addEventListener('click', async () => {
-    if (!pendingForward || !forwardMultiSelected.length) return;
-    const caption = document.getElementById('forwardCaptionInput').value.trim();
-    const targets = forwardMultiSelected.slice();
-    const p = pendingForward;
-    for (const username of targets) {
-      const r = await api('/api/send_message', { method: 'POST', body: {
-        to: username, text: caption, attachment_type: p.attachment_type,
-        attachment_data: p.attachment_data, attachment_duration: p.attachment_duration,
-        attachment_meta: p.attachment_meta, forwarded_from: p.hideSender ? null : p.forwarded_from
-      }});
-      if (r.ok && currentContact && currentContact.username === username) {
-        renderMessage(r.data);
-        sinceId = Math.max(sinceId, r.data.id);
-      }
-    }
-    clearPendingForward();
-  });
-
-  function attachLongPressContact(item, contact) {
-    let timer = null;
-    const start = () => { timer = setTimeout(() => {
-      if (pendingForward) { toggleForwardSelect(contact.username); }
-      else { openChatMenu(contact); }
-    }, 500); };
-    const cancel = () => { if (timer) clearTimeout(timer); };
-    item.addEventListener('touchstart', start);
-    item.addEventListener('touchend', cancel);
-    item.addEventListener('touchmove', cancel);
-    item.addEventListener('mousedown', start);
-    item.addEventListener('mouseup', cancel);
-    item.addEventListener('mouseleave', cancel);
-    item.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      if (pendingForward) { toggleForwardSelect(contact.username); }
-      else { openChatMenu(contact); }
-    });
-  }
-
-  function openChatMenu(contact) {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const pinBtn = document.createElement('button');
-    pinBtn.textContent = contact.pinned ? 'Открепить' : 'Закрепить';
-    pinBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const r = await api('/api/pin_chat', { method: 'POST', body: { contact: contact.username, pin: !contact.pinned } });
-      if (r.ok) { contact.pinned = !contact.pinned; refreshContactsFromCache(); }
-    });
-    menu.appendChild(pinBtn);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'danger';
-    delBtn.textContent = 'Удалить';
-    delBtn.addEventListener('click', () => { closeMessageMenu(); openDeleteChatMenu(contact); });
-    menu.appendChild(delBtn);
-
-    const blockBtn = document.createElement('button');
-    blockBtn.className = contact.blocked_by_me ? '' : 'danger';
-    blockBtn.textContent = contact.blocked_by_me ? 'Разблокировать' : 'Заблокировать';
-    blockBtn.addEventListener('click', async () => {
-      closeMessageMenu();
-      const r = await api('/api/block_user', { method: 'POST', body: { contact: contact.username, block: !contact.blocked_by_me } });
-      if (r.ok) { contact.blocked_by_me = !contact.blocked_by_me; refreshContactsFromCache(); }
-    });
-    menu.appendChild(blockBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  function openDeleteChatMenu(contact) {
-    closeMessageMenu();
-    const overlay = document.createElement('div');
-    overlay.className = 'msg-menu-overlay';
-    overlay.id = 'msgMenuOverlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeMessageMenu(); });
-    const menu = document.createElement('div');
-    menu.className = 'msg-menu';
-
-    const checkRow = document.createElement('label');
-    checkRow.className = 'menu-check-row';
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    checkRow.appendChild(check);
-    const checkLabel = document.createElement('span');
-    checkLabel.textContent = 'Удалить у всех';
-    checkRow.appendChild(checkLabel);
-    menu.appendChild(checkRow);
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'danger';
-    confirmBtn.textContent = 'Удалить';
-    confirmBtn.addEventListener('click', async () => {
-      const everyone = check.checked;
-      closeMessageMenu();
-      const r = await api('/api/delete_chat', { method: 'POST', body: { contact: contact.username, everyone, secret: !!contact.is_secret } });
-      if (contact.is_secret) {
-        await api('/api/unset_secret_chat', { method: 'POST', body: { contact: contact.username } });
-      }
-      if (r.ok) {
-        contactsCache = contactsCache.filter(c => c.username !== contact.username);
-        renderContacts(contactsCache);
-        if (currentContact && currentContact.username === contact.username) {
-          saveDraftForCurrent(); currentContact = null; showScreen('dashScreen');
-        }
-      } else {
-        alert('Не получилось удалить чат');
-      }
-    });
-    menu.appendChild(confirmBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Отмена';
-    cancelBtn.addEventListener('click', closeMessageMenu);
-    menu.appendChild(cancelBtn);
-
-    overlay.appendChild(menu);
-    document.body.appendChild(overlay);
-  }
-
-  function refreshContactsFromCache() {
-    if (document.getElementById('dashScreen').classList.contains('active')) renderContacts(contactsCache);
-  }
-
-  // --- Поиск ---
-  document.getElementById('searchBtn').addEventListener('click', async () => {
-    const rawInput = document.getElementById('searchInput').value.trim();
-    const username = rawInput.replace('@', '');
-    const errEl = document.getElementById('searchError'); errEl.textContent = '';
-    const resEl = document.getElementById('searchResult'); resEl.innerHTML = '';
-    if (!username) return;
-    if (username === me.username) { errEl.textContent = 'Это твой собственный юзернейм'; return; }
-
-    const lower = rawInput.toLowerCase();
-    const isFactEasterEgg = (lower === 'интересный факт' || lower === 'факт');
-
-    const panel = document.getElementById('searchRadioPanel');
-    const icon = document.getElementById('radioIcon');
-    const status = document.getElementById('radioStatus');
-    panel.style.display = 'flex';
-    icon.classList.remove('not-found');
-    document.getElementById('radioWaves').style.display = 'flex';
-    status.textContent = 'Поиск...';
-
-    const r = await api('/api/find_user?username=' + encodeURIComponent(username));
-
-    if (r.data.found) {
-      panel.style.display = 'none';
-      const u = r.data.user;
-      const item = document.createElement('div');
-      item.className = 'contact-item';
-      item.innerHTML = '<div class="avatar-box">' + avatarHtml(u) + '</div><div><div class="contact-name">' + escapeHtml(u.name) + officialBadge(u.official) + '</div><div class="contact-username">@' + escapeHtml(u.username) + '</div></div>';
-      item.addEventListener('click', () => { resEl.innerHTML = ''; document.getElementById('searchInput').value = ''; openChat(u); });
-      resEl.appendChild(item);
-      return;
-    }
-
-    document.getElementById('radioWaves').style.display = 'none';
-    icon.classList.add('not-found');
-    status.textContent = 'Человек не найден';
-
-    if (isFactEasterEgg) {
-      const item = document.createElement('div');
-      item.className = 'contact-item';
-      item.innerHTML = '<div class="avatar-box">🤖</div><div><div class="contact-name">Интересный факт</div><div class="contact-username">бот с фактами</div></div>';
-      item.addEventListener('click', () => { resEl.innerHTML = ''; document.getElementById('searchInput').value = ''; openFactBot(); });
-      resEl.appendChild(item);
-    }
-  });
-
-  // --- Бот "Интересный факт" (пасхалка, работает полностью локально, без сервера) ---
-  function renderBotMessage(text) {
-    const div = document.createElement('div');
-    div.className = 'msg';
-    div.innerHTML = '<div class="meta">' + formatTime(new Date().toISOString()) + '</div><div class="bubble">' + escapeHtml(text) + '</div>';
-    document.getElementById('messages').appendChild(div);
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-  }
-
-  function openFactBot() {
-    currentContact = { username: 'factbot', name: 'Интересный факт', avatar: '🤖', avatar_photo: null, online: false, blocked_by_me: false };
-    document.getElementById('chatAvatar').innerHTML = avatarHtml(currentContact);
-    document.getElementById('chatName').textContent = currentContact.name;
-    document.getElementById('chatUsername').textContent = 'бот · отвечает мгновенно';
-    document.getElementById('chatTyping').textContent = '';
-    document.getElementById('messages').innerHTML = '';
-    messagesById = {}; lastRenderedDateKey = '';
-    document.getElementById('composer').style.display = 'none';
-    document.getElementById('botActionBar').style.display = 'block';
-    document.getElementById('botFactBtn').textContent = 'Интересный факт';
-    showScreen('chatScreen');
-    renderBotMessage('Привет! Жми на кнопку ниже, чтобы получить интересный факт 🤖');
-  }
-
-  document.getElementById('botFactBtn').addEventListener('click', () => {
-    renderBotMessage(pickRandomFact());
-    document.getElementById('botFactBtn').textContent = 'Ещё факт';
-  });
-
-
-  // --- Профиль ---
-  document.getElementById('bioBtn').addEventListener('click', () => {
-    document.getElementById('bioInput').value = me.bio || '';
-    document.getElementById('birthdayInput').value = me.birthday || '';
-    document.getElementById('nameInput').value = me.name || '';
-    document.getElementById('usernameInput').value = me.username || '';
-    document.getElementById('usernameError').textContent = '';
-    document.getElementById('privacySelect').value = me.privacy_online || 'all';
-    document.getElementById('hideForwardCheck').checked = !!me.hide_forward_link;
-    document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
-    loadMyPhotos();
-    showScreen('bioScreen');
-  });
-  document.getElementById('bioBackBtn').addEventListener('click', () => showScreen('dashScreen'));
-  document.getElementById('bioSaveBtn').addEventListener('click', async () => {
-    const bio = document.getElementById('bioInput').value.trim();
-    const birthday = document.getElementById('birthdayInput').value || null;
-    const name = document.getElementById('nameInput').value.trim();
-    const newUsername = document.getElementById('usernameInput').value.trim().replace('@', '');
-    const errEl = document.getElementById('usernameError');
-    errEl.textContent = '';
-
-    if (newUsername && newUsername !== me.username) {
-      const ur = await api('/api/change_username', { method: 'POST', body: { username: newUsername } });
-      if (!ur.ok) { errEl.textContent = ur.data.error || 'Не получилось сменить юзернейм'; return; }
-      me.username = ur.data.username;
-    }
-    if (name && name !== me.name) {
-      const nr = await api('/api/update_name', { method: 'POST', body: { name } });
-      if (nr.ok) me.name = nr.data.name;
-    }
-    const r = await api('/api/update_bio', { method: 'POST', body: { bio } });
-    me.bio = r.data.bio;
-    await api('/api/update_birthday', { method: 'POST', 
+    const info = document.getElementById('forwardToolbar
