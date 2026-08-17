@@ -1234,7 +1234,7 @@ PAGE = """
   .reply-bar-label { font-size: 11px; color: var(--accent); display: block; }
   #replyBarText { font-size: 13px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
   #replyBarCancel { background: none; border: none; color: var(--text-dim); font-size: 16px; cursor: pointer; }
-  .msg .reply-quote { border-left: 3px solid var(--accent); padding-left: 8px; margin-bottom: 5px; font-size: 12.5px; color: var(--text-dim); opacity: 0.9; }
+  .msg .reply-quote { border-left: 3px solid var(--accent); padding-left: 8px; margin-bottom: 5px; font-size: 12.5px; color: var(--text-dim); opacity: 0.9; cursor: pointer; }
   .msg .forwarded-tag { font-size: 11px; color: var(--text-dim); font-style: italic; margin-bottom: 3px; }
   .fwd-name-link { font-weight: 600; cursor: pointer; text-decoration: underline; }
   .fwd-name-hidden { font-weight: 600; cursor: pointer; }
@@ -1284,7 +1284,7 @@ PAGE = """
   .msg .meta { display: none; } /* время теперь внутри пузыря, см. .bubble-time */
   .ticks { margin-left: 5px; color: var(--text-dim); }
   .ticks.read { color: #3ba7f5; }
-  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); border-radius: 4px 12px 12px 12px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
+  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border-radius: 4px 12px 12px 12px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
   .msg.own { align-self: flex-end; }
   .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 12px 4px 12px 12px; }
   .bubble-time { position: absolute; right: 10px; bottom: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; pointer-events: none; }
@@ -1294,14 +1294,17 @@ PAGE = """
   .msg .edited-tag { font-size: 9.5px; color: var(--text-dim); }
   .msg .translate-btn { display: block; margin-top: 4px; font-size: 11px; color: var(--signal); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; }
   .msg .translation { margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(0,0,0,0.15); font-size: 13.5px; font-style: italic; opacity: 0.9; }
-  .msg-menu-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 50; display: flex; align-items: flex-end; justify-content: center; }
-  .msg-menu { background: var(--panel); border-radius: 14px 14px 0 0; width: 100%; max-width: 420px; padding: 8px 0 20px; }
+  .msg-menu-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 50; display: flex; align-items: flex-end; justify-content: center; animation: overlayFadeIn 0.18s ease; }
+  .msg-menu { background: var(--panel); border-radius: 14px 14px 0 0; width: 100%; max-width: 420px; padding: 8px 0 20px; animation: menuSlideUp 0.2s ease; }
+  @keyframes overlayFadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes menuSlideUp { from { transform: translateY(28px); opacity: 0.5; } to { transform: translateY(0); opacity: 1; } }
   .msg-menu button { display: block; width: 100%; text-align: left; padding: 14px 22px; background: none; border: none; color: var(--text); font-size: 15px; cursor: pointer; }
   .msg-menu button:active { background: var(--panel-raised); }
   .msg-menu button.danger { color: #f16565; }
   .msg-menu .menu-check-row { display: flex; align-items: center; gap: 10px; padding: 10px 22px; }
   #composer { display: flex; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--border); background: var(--panel); align-items: center; }
-  .composer-icon-btn { background: var(--panel-raised); border: none; border-radius: 10px; width: 42px; height: 42px; flex-shrink: 0; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .composer-icon-btn { background: var(--panel-raised); border: none; border-radius: 10px; width: 42px; height: 42px; flex-shrink: 0; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s, transform 0.15s; }
+  #voiceBtn[data-mode="send"] { background: var(--accent); color: #1b1204; }
   .composer-icon-btn.recording { background: #c0392b; color: #fff; animation: pulse 1s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
   .msg .bubble img.msg-photo { max-width: 220px; border-radius: 10px; display: block; margin-top: 4px; cursor: pointer; }
@@ -1313,12 +1316,10 @@ PAGE = """
   .file-msg .file-name, .location-msg .file-name { font-size: 13.5px; font-weight: 600; }
   .file-msg .file-size, .location-msg .file-size { font-size: 11.5px; color: var(--text-dim); }
   .voice-speed-btn { background: var(--panel-raised); border: none; border-radius: 8px; color: var(--text); font-size: 11px; padding: 3px 7px; cursor: pointer; }
-  #undoSnackbar { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: var(--panel-raised); border-radius: 10px; padding: 10px 16px; display: flex; align-items: center; gap: 14px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,0.3); z-index: 40; }
-  #undoSnackbarBtn { background: none; border: none; color: var(--accent); font-weight: 700; cursor: pointer; font-size: 13px; }
   .draft-label { color: var(--accent) !important; }
   .voice-msg button { background: var(--accent); color: #1b1204; border: none; border-radius: 50%; width: 34px; height: 34px; cursor: pointer; flex-shrink: 0; }
   .voice-msg .voice-duration { font-size: 12px; color: var(--text-dim); }
-  #textInput { flex: 1; width: auto; }
+  #textInput { flex: 1; width: auto; font-family: 'Inter', sans-serif; }
   #sendBtn { background: var(--accent); color: #1b1204; border: none; border-radius: 10px; padding: 0 22px; font-weight: 600; cursor: pointer; }
 
   .bio-box { width: 280px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; text-align: left; }
@@ -1491,14 +1492,9 @@ PAGE = """
     <button class="composer-icon-btn" id="attachBtn" title="Прикрепить">📎</button>
     <input type="text" id="textInput" placeholder="Сообщение...">
     <button class="composer-icon-btn" id="voiceBtn" title="Удерживай, чтобы записать голосовое">🎤</button>
-    <button id="sendBtn">Отправить</button>
   </div>
   <div id="botActionBar" style="display:none;">
     <button id="botFactBtn">Интересный факт</button>
-  </div>
-  <div id="undoSnackbar" style="display:none;">
-    <span id="undoSnackbarLabel" style="cursor:pointer;">Сообщение отправлено</span>
-    <button id="undoSnackbarBtn">Отменить</button>
   </div>
 </div>
 <div id="photoPreviewOverlay" class="msg-menu-overlay" style="display:none;"><img id="photoPreviewImg" style="max-width:92%; max-height:85%; border-radius:10px;"></div>
@@ -1886,6 +1882,7 @@ PAGE = """
     document.getElementById('forwardPreviewBar').style.display = 'none';
     updateForwardToolbar();
     renderContacts(contactsCache);
+    updateComposerMode();
   }
 
   document.getElementById('forwardCancelBtn').addEventListener('click', clearPendingForward);
@@ -2221,15 +2218,15 @@ PAGE = """
 
   async function openChat(contact) {
     saveDraftForCurrent();
-    document.getElementById('undoSnackbar').style.display = 'none';
-    if (undoTimer) clearTimeout(undoTimer);
     currentContact = contact;
     document.getElementById('composer').style.display = 'flex';
     document.getElementById('botActionBar').style.display = 'none';
     document.getElementById('replyBar').style.display = 'none';
     replyToMsg = null;
     closeChatSearch();
-    if (!contactsCache.find(c => c.username === contact.username)) contactsCache.unshift(contact);
+    // раньше тут добавляли контакт в contactsCache сразу при открытии — из-за этого он "прилипал"
+    // к списку переписок, даже если ничего не отправили. Список теперь строится только из реальных
+    // сообщений (сервер), контакт появится там сам, как только что-то реально отправишь.
 
     // Если чат секретный и стоит пароль — просим его перед открытием
     if (contact.is_secret && contact.has_password) {
@@ -2264,6 +2261,7 @@ PAGE = """
     } else {
       fwdBar.style.display = 'none';
     }
+    updateComposerMode();
     const r = await api('/api/open_chat?with=' + encodeURIComponent(contact.username) + '&secret=' + (contact.is_secret ? '1' : '0'));
     r.data.messages.forEach(renderMessage);
     sinceId = Math.max(sinceId, r.data.max_id);
@@ -2355,12 +2353,28 @@ PAGE = """
   }
 
   // --- Обои чата (пресеты + своё фото), хранятся локально на устройстве ---
+  const SNOW_SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'>" +
+    "<text x='20' y='40' font-size='18' fill='#ffffff' opacity='0.85'>\u2744</text>" +
+    "<text x='120' y='25' font-size='10' fill='#bcd9ff' opacity='0.6'>\u2744</text>" +
+    "<text x='210' y='60' font-size='26' fill='#e8f4ff' opacity='0.9'>\u2744</text>" +
+    "<text x='60' y='120' font-size='14' fill='#9fc9ff' opacity='0.5'>\u2744</text>" +
+    "<text x='250' y='140' font-size='20' fill='#ffffff' opacity='0.7'>\u2744</text>" +
+    "<text x='160' y='170' font-size='9' fill='#cfe8ff' opacity='0.55'>\u2744</text>" +
+    "<text x='30' y='210' font-size='16' fill='#ffffff' opacity='0.8'>\u2744</text>" +
+    "<text x='230' y='230' font-size='12' fill='#a9d0ff' opacity='0.6'>\u2744</text>" +
+    "<text x='110' y='260' font-size='22' fill='#e8f4ff' opacity='0.75'>\u2744</text>" +
+    "<text x='280' y='280' font-size='11' fill='#ffffff' opacity='0.5'>\u2744</text>" +
+    "<text x='10' y='280' font-size='15' fill='#bcd9ff' opacity='0.65'>\u2744</text>" +
+    "<text x='170' y='90' font-size='13' fill='#ffffff' opacity='0.6'>\u2744</text>" +
+    "</svg>";
+  const SNOW_DATA_URI = 'data:image/svg+xml,' + encodeURIComponent(SNOW_SVG);
   const WALLPAPER_PRESETS = [
-    { id: 'default', label: 'Обычные', css: '', bubble: '' },
-    { id: 'purple', label: 'Фиолетовый', css: 'linear-gradient(160deg, #2b1055, #7597de)', bubble: 'rgba(28,18,55,0.55)' },
-    { id: 'blue', label: 'Синий', css: 'linear-gradient(160deg, #1e3c72, #2a5298)', bubble: 'rgba(14,24,48,0.55)' },
-    { id: 'pink', label: 'Розовый', css: 'linear-gradient(160deg, #ff9a9e, #fad0c4)', bubble: 'rgba(120,55,65,0.55)' },
-    { id: 'white', label: 'Белый', css: '#ffffff', bubble: 'rgba(60,60,60,0.14)' },
+    { id: 'default', label: 'Обычные', css: '', bubble: '', bubbleText: '' },
+    { id: 'purple', label: 'Фиолетовый', css: 'linear-gradient(160deg, #2b1055, #7597de)', bubble: 'rgba(32,20,62,0.85)', bubbleText: '#fff' },
+    { id: 'blue', label: 'Синий', css: 'linear-gradient(160deg, #1e3c72, #2a5298)', bubble: 'rgba(14,24,48,0.85)', bubbleText: '#fff' },
+    { id: 'pink', label: 'Розовый', css: 'linear-gradient(160deg, #ff9a9e, #fad0c4)', bubble: 'rgba(130,55,70,0.85)', bubbleText: '#fff' },
+    { id: 'white', label: 'Белый', css: '#ffffff', bubble: 'rgba(225,225,230,0.95)', bubbleText: '#1a1a1a' },
+    { id: 'snow', label: 'Снежинки', css: 'url("' + SNOW_DATA_URI + '") repeat, linear-gradient(160deg, #0a1628, #1a3a5c)', bubble: 'rgba(15,30,55,0.82)', bubbleText: '#fff' },
   ];
   function wallpaperKey(contact) { return 'chastota_wallpaper_' + me.username + '_' + contact.username; }
 
@@ -2394,6 +2408,7 @@ PAGE = """
     messagesEl.style.backgroundSize = '';
     messagesEl.style.backgroundPosition = '';
     messagesEl.style.removeProperty('--incoming-bubble');
+    messagesEl.style.removeProperty('--incoming-bubble-text');
     if (!raw) return;
     try {
       const w = JSON.parse(raw);
@@ -2402,11 +2417,13 @@ PAGE = """
         if (preset) {
           messagesEl.style.background = preset.css;
           if (preset.bubble) messagesEl.style.setProperty('--incoming-bubble', preset.bubble);
+          if (preset.bubbleText) messagesEl.style.setProperty('--incoming-bubble-text', preset.bubbleText);
         }
       } else if (w.type === 'custom') {
         messagesEl.style.backgroundImage = 'url(' + w.data + ')';
         messagesEl.style.backgroundSize = 'cover';
         messagesEl.style.backgroundPosition = 'center';
+        messagesEl.style.setProperty('--incoming-bubble-text', '#fff');
         computeAverageColor(w.data).then(avg => {
           if (avg) messagesEl.style.setProperty('--incoming-bubble', avg);
         });
@@ -2751,8 +2768,12 @@ PAGE = """
     div.dataset.id = msg.id;
     fillBubble(div, msg, isOwn);
     attachLongPress(div, msg);
-    document.getElementById('messages').appendChild(div);
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    const area = document.getElementById('messages');
+    const wasNearBottom = (area.scrollHeight - area.scrollTop - area.clientHeight) < 120;
+    area.appendChild(div);
+    if (isOwn || wasNearBottom) {
+      area.scrollTop = area.scrollHeight;
+    }
   }
 
   function fillBubble(div, msg, isOwn) {
@@ -2788,10 +2809,22 @@ PAGE = """
     if (msg.reply_to_id && messagesById[msg.reply_to_id]) {
       const q = messagesById[msg.reply_to_id];
       const qText = q.text || (q.attachment_type === 'photo' ? '📷 Фото' : q.attachment_type === 'voice' ? '🎤 Голосовое' : q.attachment_type === 'file' ? '📄 Файл' : q.attachment_type === 'location' ? '📍 Геопозиция' : '');
-      prefixHtml += '<div class="reply-quote">' + escapeHtml(qText.slice(0, 80)) + '</div>';
+      prefixHtml += '<div class="reply-quote" data-reply-target="' + msg.reply_to_id + '">' + escapeHtml(qText.slice(0, 80)) + '</div>';
     }
     div.innerHTML = '<div class="bubble' + (msg.attachment_type === 'photo' ? ' has-photo' : '') + '">' + prefixHtml + bodyHtml +
       '<div class="bubble-time">' + editedTag + formatTime(msg.time) + ticks + '</div></div>';
+    const quoteEl = div.querySelector('.reply-quote');
+    if (quoteEl) {
+      quoteEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const target = document.querySelector('.msg[data-id="' + quoteEl.dataset.replyTarget + '"]');
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.classList.add('search-highlight');
+          setTimeout(() => target.classList.remove('search-highlight'), 1200);
+        }
+      });
+    }
     if (msg.forwarded_from) {
       const nameEl = div.querySelector('.fwd-name-link, .fwd-name-hidden');
       nameEl.addEventListener('click', async (e) => {
@@ -2875,7 +2908,10 @@ PAGE = """
       // sl=auto — сервис сам определяет исходный язык (китайский, французский, любой)
       const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' +
         encodeURIComponent(tl) + '&dt=t&q=' + encodeURIComponent(msg.text);
-      const res = await fetch(url);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // не виснем вечно на плохой сети
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
       const data = await res.json();
       const translated = data && data[0] ? data[0].map(part => part[0]).join('') : null;
       if (btn) btn.remove();
@@ -2886,7 +2922,10 @@ PAGE = """
         div.querySelector('.bubble').appendChild(t);
       }
     } catch (e) {
-      if (btn) btn.textContent = 'Не получилось перевести';
+      if (btn) {
+        btn.textContent = 'Не получилось — нажми ещё раз';
+        btn.onclick = (ev) => { ev.stopPropagation(); translateMessage(div, msg); };
+      }
     }
   }
 
@@ -3106,6 +3145,22 @@ PAGE = """
     if (currentContact.is_secret) { openTimerPicker((ttl) => doSend(text, ttl)); return; }
     doSend(text, null);
   }
+  // --- Кнопка справа: микрофон, пока поле пустое; бумажный самолётик — как только начал печатать ---
+  function updateComposerMode() {
+    const hasText = document.getElementById('textInput').value.trim().length > 0;
+    const hasForward = pendingForward && document.getElementById('forwardPreviewBar').style.display !== 'none';
+    const btn = document.getElementById('voiceBtn');
+    if (hasText || hasForward) {
+      btn.textContent = '➤';
+      btn.dataset.mode = 'send';
+      btn.title = 'Отправить';
+    } else {
+      btn.textContent = '🎤';
+      btn.dataset.mode = 'voice';
+      btn.title = 'Удерживай, чтобы записать голосовое';
+    }
+  }
+  document.getElementById('textInput').addEventListener('input', updateComposerMode);
   async function doSendForward(caption, ttl) {
     const p = pendingForward;
     const body = { to: currentContact.username, text: caption, attachment_type: p.attachment_type,
@@ -3113,15 +3168,11 @@ PAGE = """
       attachment_meta: p.attachment_meta, forwarded_from: p.hideSender ? null : p.forwarded_from,
       secret: !!currentContact.is_secret };
     if (ttl) body.ttl_seconds = ttl;
-    const sendBtn = document.getElementById('sendBtn');
-    sendBtn.disabled = true;
     const r = await api('/api/send_message', { method: 'POST', body });
-    sendBtn.disabled = false;
     if (r.ok) {
       document.getElementById('textInput').value = '';
       renderMessage(r.data);
       sinceId = Math.max(sinceId, r.data.id);
-      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
       clearPendingForward();
     } else if (r.data && r.data.error === 'disk_full') {
       openStorageCleanup(true);
@@ -3136,13 +3187,10 @@ PAGE = """
   });
   async function doSend(text, ttl) {
     const input = document.getElementById('textInput');
-    const sendBtn = document.getElementById('sendBtn');
-    sendBtn.disabled = true;
     const body = { to: currentContact.username, text, secret: !!currentContact.is_secret };
     if (replyToMsg) body.reply_to_id = replyToMsg.id;
     if (ttl) body.ttl_seconds = ttl;
     const r = await api('/api/send_message', { method: 'POST', body });
-    sendBtn.disabled = false;
     if (r.ok) {
       input.value = '';
       localStorage.removeItem(draftKey(currentContact));
@@ -3150,43 +3198,16 @@ PAGE = """
       document.getElementById('replyBar').style.display = 'none';
       renderMessage(r.data);
       sinceId = Math.max(sinceId, r.data.id);
-      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
+      updateComposerMode();
     } else if (r.data && r.data.error === 'disk_full') {
       openStorageCleanup(true);
     } else {
       alert('Не получилось отправить — проверь связь и попробуй ещё раз. Текст сообщения сохранён в поле.');
     }
   }
-  document.getElementById('sendBtn').addEventListener('click', send);
   document.getElementById('textInput').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
   document.getElementById('textInput').addEventListener('input', () => { if (currentContact) saveDraftForCurrent(); });
 
-  // --- Отмена отправки (5 секунд) ---
-  let undoTimer = null;
-  function showSendUndoSnackbar(msgId) {
-    const bar = document.getElementById('undoSnackbar');
-    if (undoTimer) clearTimeout(undoTimer);
-    bar.style.display = 'flex';
-    bar.dataset.msgId = msgId;
-    undoTimer = setTimeout(() => { bar.style.display = 'none'; }, 5000);
-  }
-  document.getElementById('undoSnackbarLabel').addEventListener('click', () => {
-    document.getElementById('undoSnackbar').style.display = 'none';
-    if (undoTimer) clearTimeout(undoTimer);
-  });
-  document.getElementById('undoSnackbarBtn').addEventListener('click', () => {
-    const bar = document.getElementById('undoSnackbar');
-    const msgId = parseInt(bar.dataset.msgId, 10);
-    bar.style.display = 'none';
-    if (undoTimer) clearTimeout(undoTimer);
-    confirmOverlay('Вы точно хотите удалить?', async () => {
-      const r = await api('/api/delete_message', { method: 'POST', body: { id: msgId, everyone: true } });
-      if (r.ok) {
-        const div = document.querySelector('.msg[data-id="' + msgId + '"]');
-        if (div) div.remove();
-      }
-    });
-  });
   function confirmOverlay(text, onYes) {
     closeMessageMenu();
     const overlay = document.createElement('div');
@@ -3261,7 +3282,6 @@ PAGE = """
       document.getElementById('replyBar').style.display = 'none';
       renderMessage(r.data);
       sinceId = Math.max(sinceId, r.data.id);
-      if (r.data.id > 0) showSendUndoSnackbar(r.data.id);
     } else if (r.data && r.data.error === 'disk_full') {
       openStorageCleanup(true);
     } else {
@@ -3521,6 +3541,7 @@ PAGE = """
   const voiceBtn = document.getElementById('voiceBtn');
 
   async function startRecording() {
+    if (voiceBtn.dataset.mode === 'send') return; // в режиме отправки долгое нажатие не пишет голосовое
     if (!currentContact || mediaRecorder) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -3548,11 +3569,13 @@ PAGE = """
   function stopRecording() {
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
   }
+  voiceBtn.addEventListener('click', () => { if (voiceBtn.dataset.mode === 'send') send(); });
   voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
   voiceBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
   voiceBtn.addEventListener('mousedown', startRecording);
   voiceBtn.addEventListener('mouseup', stopRecording);
   voiceBtn.addEventListener('mouseleave', stopRecording);
+  updateComposerMode();
 
   function playVoice(btn, dataUrl) {
     if (btn._audio && !btn._audio.paused) { btn._audio.pause(); btn._audio.currentTime = 0; btn.textContent = '▶'; return; }
