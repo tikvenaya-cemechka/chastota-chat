@@ -26,6 +26,17 @@ DB_PATH = os.path.join(BASE_DIR, 'chastota.db')  # абсолютный путь
 ONLINE_SECONDS = 20  # если человек делал запрос за последние N секунд — считаем "в сети"
 TYPING_SECONDS = 3
 
+
+@app.after_request
+def add_no_cache_headers(response):
+    """Запрещаем кэширование ответов /api/* — иначе браузер или прокси (Cloudflare Worker)
+    могут отдавать устаревшие сообщения вместо свежих при повторном открытии чата."""
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
 FOUNDER_USERNAMES = []  # впиши сюда свой юзернейм и юзернеймы друзей, когда будете готовы
 
 
@@ -1143,7 +1154,7 @@ PAGE = """
     --text-dim: #8b93a7; --border: #2a3245; --danger: #ff6b6b;
   }
   body.light {
-    --bg: #f5f3ef; --panel: #ffffff; --panel-raised: #eeecea;
+    --bg: #f5f3ef; --panel: #ffffff; --panel-raised: #e4e0d8;
     --accent: #d97706; --signal: #0d9488; --text: #1b1f27;
     --text-dim: #6b7280; --border: #dcdad5; --danger: #dc2626;
   }
@@ -1284,7 +1295,7 @@ PAGE = """
   .msg .meta { display: none; } /* время теперь внутри пузыря, см. .bubble-time */
   .ticks { margin-left: 5px; color: var(--text-dim); }
   .ticks.read { color: #3ba7f5; }
-  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border-radius: 4px 12px 12px 12px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
+  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border: 1px solid var(--incoming-bubble-border, var(--border)); border-radius: 4px 12px 12px 12px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
   .msg.own { align-self: flex-end; }
   .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 12px 4px 12px 12px; }
   .bubble-time { position: absolute; right: 10px; bottom: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; pointer-events: none; }
@@ -1577,6 +1588,7 @@ PAGE = """
   async function api(path, opts) {
     opts = opts || {};
     opts.headers = { 'Content-Type': 'application/json' };
+    opts.cache = 'no-store'; // критично: без этого браузер/прокси мог отдавать устаревшие данные чата
     if (opts.body) opts.body = JSON.stringify(Object.assign({ token }, opts.body));
     const sep = path.includes('?') ? '&' : '?';
     const url = opts.body ? path : path + sep + 'token=' + encodeURIComponent(token || '');
@@ -2274,9 +2286,10 @@ PAGE = """
   // --- Подгрузка старых сообщений при прокрутке наверх (чтобы не грузить всю историю разом) ---
   let hasMoreOlderMessages = false;
   let isLoadingOlderMessages = false;
+  let suppressScrollLoad = false; // подавляем подгрузку старых сообщений на время открытия/закрытия клавиатуры
   async function loadOlderMessagesIfNeeded() {
     const area = document.getElementById('messages');
-    if (area.scrollTop > 60 || !hasMoreOlderMessages || isLoadingOlderMessages || !currentContact) return;
+    if (suppressScrollLoad || area.scrollTop > 60 || !hasMoreOlderMessages || isLoadingOlderMessages || !currentContact) return;
     isLoadingOlderMessages = true;
     const firstMsgDiv = area.querySelector('.msg[data-id]');
     const oldestId = firstMsgDiv ? parseInt(firstMsgDiv.dataset.id, 10) : 0;
@@ -2315,6 +2328,16 @@ PAGE = """
   document.getElementById('messages').addEventListener('scroll', () => {
     clearTimeout(window._scrollDebounce);
     window._scrollDebounce = setTimeout(loadOlderMessagesIfNeeded, 120);
+  });
+  document.getElementById('textInput').addEventListener('focus', () => {
+    suppressScrollLoad = true;
+    clearTimeout(window._kbSuppressTimer);
+    window._kbSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 700);
+  });
+  document.getElementById('textInput').addEventListener('blur', () => {
+    suppressScrollLoad = true;
+    clearTimeout(window._kbSuppressTimer);
+    window._kbSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 700);
   });
 
   function promptSecretPassword(contact) {
@@ -2369,12 +2392,12 @@ PAGE = """
     "</svg>";
   const SNOW_DATA_URI = 'data:image/svg+xml,' + encodeURIComponent(SNOW_SVG);
   const WALLPAPER_PRESETS = [
-    { id: 'default', label: 'Обычные', css: '', bubble: '', bubbleText: '' },
-    { id: 'purple', label: 'Фиолетовый', css: 'linear-gradient(160deg, #2b1055, #7597de)', bubble: 'rgba(32,20,62,0.85)', bubbleText: '#fff' },
-    { id: 'blue', label: 'Синий', css: 'linear-gradient(160deg, #1e3c72, #2a5298)', bubble: 'rgba(14,24,48,0.85)', bubbleText: '#fff' },
-    { id: 'pink', label: 'Розовый', css: 'linear-gradient(160deg, #ff9a9e, #fad0c4)', bubble: 'rgba(130,55,70,0.85)', bubbleText: '#fff' },
-    { id: 'white', label: 'Белый', css: '#ffffff', bubble: 'rgba(225,225,230,0.95)', bubbleText: '#1a1a1a' },
-    { id: 'snow', label: 'Снежинки', css: 'url("' + SNOW_DATA_URI + '") repeat, linear-gradient(160deg, #0a1628, #1a3a5c)', bubble: 'rgba(15,30,55,0.82)', bubbleText: '#fff' },
+    { id: 'default', label: 'Обычные', css: '', bubble: '', bubbleText: '', bubbleBorder: '' },
+    { id: 'purple', label: 'Фиолетовый', css: 'linear-gradient(160deg, #2b1055, #7597de)', bubble: 'rgba(24,15,48,0.92)', bubbleText: '#fff', bubbleBorder: 'rgba(255,255,255,0.15)' },
+    { id: 'blue', label: 'Синий', css: 'linear-gradient(160deg, #1e3c72, #2a5298)', bubble: 'rgba(10,18,38,0.92)', bubbleText: '#fff', bubbleBorder: 'rgba(255,255,255,0.15)' },
+    { id: 'pink', label: 'Розовый', css: 'linear-gradient(160deg, #ff9a9e, #fad0c4)', bubble: 'rgba(110,45,58,0.92)', bubbleText: '#fff', bubbleBorder: 'rgba(255,255,255,0.15)' },
+    { id: 'white', label: 'Белый', css: '#ffffff', bubble: '#dde1ea', bubbleText: '#1a1a1a', bubbleBorder: 'rgba(0,0,0,0.12)' },
+    { id: 'snow', label: 'Снежинки', css: 'url("' + SNOW_DATA_URI + '") repeat, linear-gradient(160deg, #0a1628, #1a3a5c)', bubble: 'rgba(10,22,42,0.92)', bubbleText: '#fff', bubbleBorder: 'rgba(255,255,255,0.15)' },
   ];
   function wallpaperKey(contact) { return 'chastota_wallpaper_' + me.username + '_' + contact.username; }
 
@@ -2391,8 +2414,8 @@ PAGE = """
           const data = ctx.getImageData(0, 0, 24, 24).data;
           let r = 0, g = 0, b = 0, n = 0;
           for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
-          r = Math.round(r / n * 0.7); g = Math.round(g / n * 0.7); b = Math.round(b / n * 0.7); // чуть темнее фона
-          resolve('rgba(' + r + ',' + g + ',' + b + ',0.6)');
+          r = Math.round(r / n * 0.4); g = Math.round(g / n * 0.4); b = Math.round(b / n * 0.4); // заметно темнее фона, иначе на светлом фото пузырь просвечивает
+          resolve('rgba(' + r + ',' + g + ',' + b + ',0.9)');
         } catch (e) { resolve(null); }
       };
       img.onerror = () => resolve(null);
@@ -2409,6 +2432,7 @@ PAGE = """
     messagesEl.style.backgroundPosition = '';
     messagesEl.style.removeProperty('--incoming-bubble');
     messagesEl.style.removeProperty('--incoming-bubble-text');
+    messagesEl.style.removeProperty('--incoming-bubble-border');
     if (!raw) return;
     try {
       const w = JSON.parse(raw);
@@ -2418,12 +2442,14 @@ PAGE = """
           messagesEl.style.background = preset.css;
           if (preset.bubble) messagesEl.style.setProperty('--incoming-bubble', preset.bubble);
           if (preset.bubbleText) messagesEl.style.setProperty('--incoming-bubble-text', preset.bubbleText);
+          if (preset.bubbleBorder) messagesEl.style.setProperty('--incoming-bubble-border', preset.bubbleBorder);
         }
       } else if (w.type === 'custom') {
         messagesEl.style.backgroundImage = 'url(' + w.data + ')';
         messagesEl.style.backgroundSize = 'cover';
         messagesEl.style.backgroundPosition = 'center';
         messagesEl.style.setProperty('--incoming-bubble-text', '#fff');
+        messagesEl.style.setProperty('--incoming-bubble-border', 'rgba(255,255,255,0.15)');
         computeAverageColor(w.data).then(avg => {
           if (avg) messagesEl.style.setProperty('--incoming-bubble', avg);
         });
