@@ -2333,10 +2333,17 @@ PAGE = """
     clearTimeout(window._afterLoadSuppressTimer);
     window._afterLoadSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 450);
   }
-  document.getElementById('messages').addEventListener('scroll', () => {
+  // Слушаем НЕ 'scroll' (его вызывает и код, и человек — не различить), а сам жест —
+  // тогда программная прокрутка (после отправки, после подгрузки, после фокуса на поле и т.д.)
+  // в принципе не может сама себя запустить по кругу, только настоящее касание/колесо мыши.
+  document.getElementById('messages').addEventListener('touchmove', () => {
     clearTimeout(window._scrollDebounce);
     window._scrollDebounce = setTimeout(loadOlderMessagesIfNeeded, 150);
-  });
+  }, { passive: true });
+  document.getElementById('messages').addEventListener('wheel', () => {
+    clearTimeout(window._scrollDebounce);
+    window._scrollDebounce = setTimeout(loadOlderMessagesIfNeeded, 150);
+  }, { passive: true });
   document.getElementById('textInput').addEventListener('focus', () => {
     suppressScrollLoad = true;
     clearTimeout(window._kbSuppressTimer);
