@@ -37,7 +37,7 @@ def add_no_cache_headers(response):
         response.headers['Expires'] = '0'
     return response
 
-FOUNDER_USERNAMES = []  # впиши сюда свой юзернейм и юзернеймы друзей, когда будете готовы
+FOUNDER_USERNAMES = ['akulin', 'alina123']  # впиши сюда свой юзернейм и юзернеймы друзей, когда будете готовы
 
 
 def get_db():
@@ -1570,7 +1570,7 @@ PAGE = """
   }
   function officialBadge(isOfficial) {
     if (!isOfficial) return '';
-    return '<svg class="official-badge" viewBox="0 0 22 22" title="Official"><path fill="#3ba7f5" d="M11 0l2.2 2.1 3-.7 1 2.9 3 1-0.7 3L21 11l-2.1 2.2.7 3-2.9 1-1 3-3-.7L11 22l-2.2-2.1-3 .7-1-2.9-3-1 .7-3L0 11l2.1-2.2-.7-3 2.9-1 1-3 3 .7z"/><path fill="#fff" d="M9.3 14.7L6 11.4l1.4-1.4 1.9 1.9 4.9-4.9 1.4 1.4z"/></svg>';
+    return '<svg class="official-badge" viewBox="0 0 22 22" title="Official"><circle cx="11" cy="11" r="11" fill="#3ba7f5"/><path fill="#fff" d="M9.3 14.7L6 11.4l1.4-1.4 1.9 1.9 4.9-4.9 1.4 1.4z"/></svg>';
   }
   function avatarHtml(user) {
     if (user && user.blocked_by_me) return '<div class="avatar-blocked"></div>';
@@ -2291,13 +2291,15 @@ PAGE = """
     const area = document.getElementById('messages');
     if (suppressScrollLoad || area.scrollTop > 60 || !hasMoreOlderMessages || isLoadingOlderMessages || !currentContact) return;
     isLoadingOlderMessages = true;
+    suppressScrollLoad = true; // глушим скролл-события на всё время загрузки и восстановления позиции —
+                                // иначе программная прокрутка ниже сама провоцирует новый вызов, и получается цепная реакция
     const firstMsgDiv = area.querySelector('.msg[data-id]');
     const oldestId = firstMsgDiv ? parseInt(firstMsgDiv.dataset.id, 10) : 0;
-    if (!oldestId) { isLoadingOlderMessages = false; return; }
+    if (!oldestId) { isLoadingOlderMessages = false; suppressScrollLoad = false; return; }
     const prevHeight = area.scrollHeight;
     const r = await api('/api/load_older_messages?with=' + encodeURIComponent(currentContact.username) +
       '&secret=' + (currentContact.is_secret ? '1' : '0') + '&before_id=' + oldestId);
-    if (r.ok) {
+    if (r.ok && r.data.messages.length) {
       hasMoreOlderMessages = !!r.data.has_more;
       const existingFirstChild = area.firstChild;
       const existingFirstIsSeparator = existingFirstChild && existingFirstChild.classList && existingFirstChild.classList.contains('date-separator');
@@ -2322,12 +2324,18 @@ PAGE = """
       while (tempDiv.firstChild) frag.appendChild(tempDiv.firstChild);
       area.insertBefore(frag, area.firstChild);
       area.scrollTop = area.scrollHeight - prevHeight; // не даём экрану "прыгнуть"
+    } else {
+      hasMoreOlderMessages = false;
     }
     isLoadingOlderMessages = false;
+    // отпускаем блокировку с запасом по времени — даём браузеру "успокоиться" после программной прокрутки,
+    // прежде чем снова доверять событиям scroll как настоящему действию пользователя
+    clearTimeout(window._afterLoadSuppressTimer);
+    window._afterLoadSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 450);
   }
   document.getElementById('messages').addEventListener('scroll', () => {
     clearTimeout(window._scrollDebounce);
-    window._scrollDebounce = setTimeout(loadOlderMessagesIfNeeded, 120);
+    window._scrollDebounce = setTimeout(loadOlderMessagesIfNeeded, 150);
   });
   document.getElementById('textInput').addEventListener('focus', () => {
     suppressScrollLoad = true;
@@ -3596,8 +3604,16 @@ PAGE = """
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
   }
   voiceBtn.addEventListener('click', () => { if (voiceBtn.dataset.mode === 'send') send(); });
-  voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
-  voiceBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+  voiceBtn.addEventListener('touchstart', (e) => {
+    if (voiceBtn.dataset.mode === 'send') return; // не глушим обычный тап-клик в режиме отправки
+    e.preventDefault();
+    startRecording();
+  });
+  voiceBtn.addEventListener('touchend', (e) => {
+    if (voiceBtn.dataset.mode === 'send') return;
+    e.preventDefault();
+    stopRecording();
+  });
   voiceBtn.addEventListener('mousedown', startRecording);
   voiceBtn.addEventListener('mouseup', stopRecording);
   voiceBtn.addEventListener('mouseleave', stopRecording);
