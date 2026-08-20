@@ -1152,11 +1152,13 @@ PAGE = """
     --bg: #12161f; --panel: #1b2130; --panel-raised: #232b3d;
     --accent: #ffb84d; --signal: #5eead4; --text: #e8e6e3;
     --text-dim: #8b93a7; --border: #2a3245; --danger: #ff6b6b;
+    --nav-border: rgba(255,255,255,0.14);
   }
   body.light {
     --bg: #f5f3ef; --panel: #ffffff; --panel-raised: #e4e0d8;
     --accent: #d97706; --signal: #0d9488; --text: #1b1f27;
     --text-dim: #6b7280; --border: #dcdad5; --danger: #dc2626;
+    --nav-border: rgba(20,20,20,0.22);
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -1269,7 +1271,7 @@ PAGE = """
   .timer-wheel .timer-value { font-size: 22px; font-weight: 700; min-width: 60px; text-align: center; }
 
   .contacts-title { padding: 12px 20px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
-  .contacts-list { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
+  .contacts-list { flex: 1; overflow-y: auto; padding: 0 10px 90px; }
   .contact-item { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; cursor: pointer; transition: background 0.15s; }
   .unread-badge { background: var(--accent); color: #1b1204; font-size: 12px; font-weight: 700; border-radius: 999px; min-width: 22px; height: 22px; padding: 0 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
   .contact-item:hover { background: var(--panel-raised); }
@@ -1300,8 +1302,7 @@ PAGE = """
   .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 12px 4px 12px 12px; }
   .bubble-time { position: absolute; right: 10px; bottom: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; pointer-events: none; }
   .msg.own .bubble-time { color: rgba(27,18,4,0.65); }
-  .bubble-time .ticks.read { color: #3ba7f5; }
-  .msg.own .bubble-time .ticks.read { color: #1b1204; }
+  .bubble-time .ticks.read { color: #2196f3; text-shadow: 0 0 1px rgba(255,255,255,0.5); }
   .msg .edited-tag { font-size: 9.5px; color: var(--text-dim); }
   .msg .translate-btn { display: block; margin-top: 4px; font-size: 11px; color: var(--signal); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; }
   .msg .translation { margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(0,0,0,0.15); font-size: 13.5px; font-style: italic; opacity: 0.9; }
@@ -1334,6 +1335,22 @@ PAGE = """
   #sendBtn { background: var(--accent); color: #1b1204; border: none; border-radius: 10px; padding: 0 22px; font-weight: 600; cursor: pointer; }
 
   .bio-box { width: 280px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; text-align: left; }
+  .settings-body { flex: 1; overflow-y: auto; padding: 18px 20px 100px; max-width: 480px; width: 100%; box-sizing: border-box; margin: 0 auto; }
+  #bottomNav {
+    position: fixed; left: 20px; right: 20px;
+    bottom: max(16px, calc(env(safe-area-inset-bottom) + 12px));
+    display: none; z-index: 60;
+    background: var(--panel); border: 1.5px solid var(--nav-border); border-radius: 999px;
+    padding: 8px 10px; box-shadow: 0 8px 22px rgba(0,0,0,0.22);
+  }
+  #bottomNav.visible { display: flex; }
+  .nav-tab { flex: 1; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0; color: var(--text-dim); font-size: 10.5px; cursor: pointer; }
+  .nav-tab.active { color: var(--text); }
+  .nav-tab svg { width: 23px; height: 23px; color: currentColor; }
+  .nav-icon-wrap { position: relative; display: inline-flex; }
+  .nav-badge { position: absolute; top: -5px; right: -9px; background: var(--accent); color: #1b1204; font-size: 9.5px; font-weight: 700; border-radius: 999px; min-width: 16px; height: 16px; padding: 0 4px; display: flex; align-items: center; justify-content: center; }
+  .nav-avatar { width: 23px; height: 23px; border-radius: 50%; font-size: 13px; border: 1.5px solid var(--text-dim); }
+  .nav-tab.active .nav-avatar { border-color: var(--text); }
   textarea { width: 100%; background: var(--panel-raised); border: 1px solid var(--border); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; padding: 10px; border-radius: 8px; resize: vertical; min-height: 60px; }
 
   #messages::-webkit-scrollbar, .contacts-list::-webkit-scrollbar { width: 6px; }
@@ -1382,8 +1399,6 @@ PAGE = """
     <div class="header-right">
       <button class="icon-btn" id="supportBtn" title="Техподдержка">🛟</button>
       <button class="icon-btn" id="themeBtn">🌙</button>
-      <button class="icon-btn" id="bioBtn">О себе</button>
-      <button class="icon-btn" id="logoutBtn">Выйти</button>
     </div>
   </header>
   <div id="birthdayBanner" style="display:none;"></div>
@@ -1418,9 +1433,13 @@ PAGE = """
   <div class="contacts-list" id="contactsList"></div>
 </div>
 
-<div id="bioScreen" class="screen center">
-  <div class="bio-box">
-    <div class="brand" style="margin-bottom:12px;">Профиль</div>
+<div id="profileScreen" class="screen">
+  <header>
+    <button class="back-btn" id="profileBackBtn">←</button>
+    <div class="brand" style="font-size:16px;">Профиль</div>
+    <div style="width:34px;"></div>
+  </header>
+  <div class="settings-body">
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
       <div class="avatar-box" id="avatarPreview" style="width:60px;height:60px;font-size:28px;"></div>
       <div style="display:flex; flex-direction:column; gap:6px;">
@@ -1442,13 +1461,21 @@ PAGE = """
     <textarea id="bioInput" placeholder="Расскажи что-нибудь о себе..."></textarea>
     <div style="margin-top:12px; font-size:13px; color:var(--text-dim);">День рождения</div>
     <input type="date" id="birthdayInput" style="width:100%; margin-top:6px;">
-    <div style="display:flex; gap:8px; margin-top:12px;">
-      <button class="primary" id="bioSaveBtn" style="flex:1;">Сохранить</button>
-      <button class="icon-btn" id="bioBackBtn">Назад</button>
-    </div>
+    <button class="primary" id="bioSaveBtn" style="width:100%; margin-top:14px;">Сохранить</button>
     <div style="margin-top:18px; font-size:13px; color:var(--text-dim);">Мои фото</div>
     <div id="myPhotosList" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;"></div>
-    <div style="margin-top:18px; font-size:13px; color:var(--text-dim);">Кто видит мой статус "В сети"</div>
+  </div>
+</div>
+
+<div id="settingsScreen" class="screen">
+  <header>
+    <button class="back-btn" id="settingsBackBtn">←</button>
+    <div class="brand" style="font-size:16px;">Настройки</div>
+    <div style="width:34px;"></div>
+  </header>
+  <div class="settings-body">
+    <button class="icon-btn" id="themeBtnSettings" style="width:100%; margin-bottom:16px;">🌙 Сменить тему</button>
+    <div style="font-size:13px; color:var(--text-dim);">Кто видит мой статус "В сети"</div>
     <select id="privacySelect" style="width:100%; margin-top:6px;">
       <option value="all">Все</option>
       <option value="contacts">Только контакты</option>
@@ -1462,7 +1489,12 @@ PAGE = """
       <input type="checkbox" id="factsEnabledCheck" checked>
       Показывать интересные факты при запуске
     </label>
-    <button id="deleteAccountBtn" class="danger" style="width:100%; margin-top:24px; background:none; border:1px solid var(--danger); color:var(--danger);">Удалить аккаунт</button>
+    <label style="display:flex; align-items:center; gap:10px; margin-top:16px; font-size:13px;">
+      <input type="checkbox" id="typingEnabledCheck" checked>
+      Показывать собеседникам, что я печатаю
+    </label>
+    <button id="logoutBtnSettings" class="icon-btn" style="width:100%; margin-top:24px;">Выйти из аккаунта</button>
+    <button id="deleteAccountBtn" class="danger" style="width:100%; margin-top:12px; background:none; border:1px solid var(--danger); color:var(--danger);">Удалить аккаунт</button>
   </div>
 </div>
 
@@ -1534,7 +1566,26 @@ PAGE = """
   </div>
 </div>
 
+<nav id="bottomNav">
+  <button class="nav-tab" id="navChatsBtn" data-tab="chats">
+    <span class="nav-icon-wrap">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M4 5h16v11H8l-4 4V5z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+      <span class="nav-badge" id="navChatsBadge" style="display:none;"></span>
+    </span>
+    <span>Чаты</span>
+  </button>
+  <button class="nav-tab" id="navSettingsBtn" data-tab="settings">
+    <svg viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V19.5a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H4.5a2 2 0 110-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H10a1.7 1.7 0 001-1.55V4.5a2 2 0 114 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V10a1.7 1.7 0 001.55 1h.09a2 2 0 110 4h-.09a1.7 1.7 0 00-1.55 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <span>Настройки</span>
+  </button>
+  <button class="nav-tab" id="navProfileBtn" data-tab="profile">
+    <span class="avatar-box nav-avatar" id="navProfileAvatar"></span>
+    <span>Профиль</span>
+  </button>
+</nav>
+
 <script>
+
   let me = null;
   let token = localStorage.getItem('chastota_token') || null;
   let currentContact = null;
@@ -1559,12 +1610,23 @@ PAGE = """
     localStorage.setItem('chastota_theme', next);
   });
 
+  const NAV_VISIBLE_SCREENS = ['dashScreen', 'profileScreen', 'settingsScreen'];
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => { s.classList.remove('active'); s.classList.remove('visible'); });
     const el = document.getElementById(id);
     el.classList.add('active');
     requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('visible')));
+    document.getElementById('bottomNav').classList.toggle('visible', NAV_VISIBLE_SCREENS.includes(id));
   }
+  function setActiveNavTab(tab) {
+    document.querySelectorAll('.nav-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  }
+  function updateNavProfileIcon() {
+    if (me) document.getElementById('navProfileAvatar').innerHTML = avatarHtml(me);
+  }
+  document.getElementById('navChatsBtn').addEventListener('click', () => { showScreen('dashScreen'); setActiveNavTab('chats'); });
+  document.getElementById('navSettingsBtn').addEventListener('click', openSettingsScreen);
+  document.getElementById('navProfileBtn').addEventListener('click', openProfileScreen);
   function escapeHtml(str) {
     const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
   }
@@ -1733,13 +1795,14 @@ PAGE = """
     } else {
       factEl.style.display = 'none';
     }
-    const minWait = new Promise(resolve => setTimeout(resolve, factsEnabled ? 1800 : 150));
+    const minWait = new Promise(resolve => setTimeout(resolve, 150)); // кнопка "Продолжить" теперь всегда почти мгновенная
     const authCheck = (async () => {
       if (token) {
         const r = await api('/api/me');
         if (r.ok) {
           me = r.data.user; contactsCache = r.data.contacts;
           renderContacts(contactsCache);
+          updateNavProfileIcon();
           splashTargetScreen = 'dashScreen';
           return;
         } else {
@@ -1754,7 +1817,7 @@ PAGE = """
 
   document.getElementById('splashContinueBtn').addEventListener('click', () => {
     showScreen(splashTargetScreen);
-    if (splashTargetScreen === 'dashScreen') { startPolling(); checkStorageWarning(); }
+    if (splashTargetScreen === 'dashScreen') { startPolling(); checkStorageWarning(); setActiveNavTab('chats'); }
   });
 
   // --- Регистрация ---
@@ -1797,12 +1860,14 @@ PAGE = """
     me = data.user;
     contactsCache = data.contacts || [];
     renderContacts(contactsCache);
+    updateNavProfileIcon();
     showScreen('dashScreen');
+    setActiveNavTab('chats');
     startPolling();
     checkStorageWarning();
   }
 
-  document.getElementById('logoutBtn').addEventListener('click', async () => {
+  document.getElementById('logoutBtnSettings').addEventListener('click', async () => {
     stopPolling();
     await api('/api/logout', { method: 'POST', body: {} });
     localStorage.removeItem('chastota_token');
@@ -1834,6 +1899,10 @@ PAGE = """
   function renderContacts(allContacts) {
     checkBirthdays(allContacts);
     updateForwardToolbar();
+    const totalUnread = allContacts.reduce((sum, c) => sum + (c.unread || 0), 0);
+    const badge = document.getElementById('navChatsBadge');
+    if (totalUnread > 0) { badge.style.display = 'flex'; badge.textContent = totalUnread > 99 ? '99+' : totalUnread; }
+    else { badge.style.display = 'none'; }
     const contacts = allContacts.filter(c => c.username !== me.username); // Избранное показываем отдельной кнопкой, не дублируем в списке
     const list = document.getElementById('contactsList');
     list.innerHTML = '';
@@ -2115,20 +2184,18 @@ PAGE = """
 
 
   // --- Профиль ---
-  document.getElementById('bioBtn').addEventListener('click', () => {
+  function openProfileScreen() {
     document.getElementById('bioInput').value = me.bio || '';
     document.getElementById('birthdayInput').value = me.birthday || '';
     document.getElementById('nameInput').value = me.name || '';
     document.getElementById('usernameInput').value = me.username || '';
     document.getElementById('usernameError').textContent = '';
-    document.getElementById('privacySelect').value = me.privacy_online || 'all';
-    document.getElementById('hideForwardCheck').checked = !!me.hide_forward_link;
-    document.getElementById('factsEnabledCheck').checked = localStorage.getItem('chastota_facts_enabled') !== '0';
     document.getElementById('avatarPreview').innerHTML = avatarHtml(me);
     loadMyPhotos();
-    showScreen('bioScreen');
-  });
-  document.getElementById('bioBackBtn').addEventListener('click', () => showScreen('dashScreen'));
+    showScreen('profileScreen');
+    setActiveNavTab('profile');
+  }
+  document.getElementById('profileBackBtn').addEventListener('click', () => { showScreen('dashScreen'); setActiveNavTab('chats'); });
   document.getElementById('bioSaveBtn').addEventListener('click', async () => {
     const bio = document.getElementById('bioInput').value.trim();
     const birthday = document.getElementById('birthdayInput').value || null;
@@ -2150,15 +2217,39 @@ PAGE = """
     me.bio = r.data.bio;
     await api('/api/update_birthday', { method: 'POST', body: { birthday } });
     me.birthday = birthday;
-    const privacy_online = document.getElementById('privacySelect').value;
+    updateNavProfileIcon();
+    showScreen('dashScreen');
+    setActiveNavTab('chats');
+  });
+
+  // --- Настройки: открываем экран и сразу подставляем текущие значения ---
+  function openSettingsScreen() {
+    document.getElementById('privacySelect').value = me.privacy_online || 'all';
+    document.getElementById('hideForwardCheck').checked = !!me.hide_forward_link;
+    document.getElementById('factsEnabledCheck').checked = localStorage.getItem('chastota_facts_enabled') !== '0';
+    document.getElementById('typingEnabledCheck').checked = localStorage.getItem('chastota_typing_enabled') !== '0';
+    showScreen('settingsScreen');
+    setActiveNavTab('settings');
+  }
+  document.getElementById('settingsBackBtn').addEventListener('click', () => { showScreen('dashScreen'); setActiveNavTab('chats'); });
+  // Каждая настройка сохраняется сразу по изменению — общей кнопки "Сохранить" здесь больше нет
+  document.getElementById('privacySelect').addEventListener('change', async (e) => {
+    const privacy_online = e.target.value;
     await api('/api/update_privacy', { method: 'POST', body: { privacy_online } });
     me.privacy_online = privacy_online;
-    const hide_forward_link = document.getElementById('hideForwardCheck').checked;
+  });
+  document.getElementById('hideForwardCheck').addEventListener('change', async (e) => {
+    const hide_forward_link = e.target.checked;
     await api('/api/update_forward_privacy', { method: 'POST', body: { hide_forward_link } });
     me.hide_forward_link = hide_forward_link;
-    localStorage.setItem('chastota_facts_enabled', document.getElementById('factsEnabledCheck').checked ? '1' : '0');
-    showScreen('dashScreen');
   });
+  document.getElementById('factsEnabledCheck').addEventListener('change', (e) => {
+    localStorage.setItem('chastota_facts_enabled', e.target.checked ? '1' : '0');
+  });
+  document.getElementById('typingEnabledCheck').addEventListener('change', (e) => {
+    localStorage.setItem('chastota_typing_enabled', e.target.checked ? '1' : '0');
+  });
+  document.getElementById('themeBtnSettings').addEventListener('click', () => document.getElementById('themeBtn').click());
   async function loadMyPhotos() {
     const list = document.getElementById('myPhotosList');
     list.innerHTML = '';
@@ -2239,6 +2330,8 @@ PAGE = """
     // раньше тут добавляли контакт в contactsCache сразу при открытии — из-за этого он "прилипал"
     // к списку переписок, даже если ничего не отправили. Список теперь строится только из реальных
     // сообщений (сервер), контакт появится там сам, как только что-то реально отправишь.
+    const cachedEntry = contactsCache.find(c => c.username === contact.username);
+    if (cachedEntry && cachedEntry.unread) { cachedEntry.unread = 0; } // не ждём опроса — гасим кружок сразу
 
     // Если чат секретный и стоит пароль — просим его перед открытием
     if (contact.is_secret && contact.has_password) {
@@ -2280,7 +2373,17 @@ PAGE = """
     sinceTime = r.data.sync_time || sinceTime;
     hasMoreOlderMessages = !!r.data.has_more;
     isLoadingOlderMessages = false;
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    scrollChatToBottomRobust();
+  }
+
+  // Прокрутка вниз с защитой от "уезжания", если фото в чате ещё догружаются и меняют высоту разметки
+  function scrollChatToBottomRobust() {
+    const area = document.getElementById('messages');
+    area.scrollTop = area.scrollHeight;
+    requestAnimationFrame(() => { area.scrollTop = area.scrollHeight; });
+    area.querySelectorAll('img.msg-photo').forEach(img => {
+      if (!img.complete) img.addEventListener('load', () => { area.scrollTop = area.scrollHeight; }, { once: true });
+    });
   }
 
   // --- Подгрузка старых сообщений при прокрутке наверх (чтобы не грузить всю историю разом) ---
@@ -2812,8 +2915,16 @@ PAGE = """
     const area = document.getElementById('messages');
     const wasNearBottom = (area.scrollHeight - area.scrollTop - area.clientHeight) < 120;
     area.appendChild(div);
-    if (isOwn || wasNearBottom) {
+    const shouldStickToBottom = isOwn || wasNearBottom;
+    if (shouldStickToBottom) {
       area.scrollTop = area.scrollHeight;
+      // фото/картинка может догрузиться позже и растянуть разметку уже ПОСЛЕ прокрутки —
+      // из-за этого экран визуально "уезжает" от низа. Держим у низа, пока не догрузится.
+      requestAnimationFrame(() => { area.scrollTop = area.scrollHeight; });
+      const img = div.querySelector('img.msg-photo');
+      if (img && !img.complete) {
+        img.addEventListener('load', () => { area.scrollTop = area.scrollHeight; }, { once: true });
+      }
     }
   }
 
