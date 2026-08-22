@@ -1297,9 +1297,9 @@ PAGE = """
   .msg .meta { display: none; } /* время теперь внутри пузыря, см. .bubble-time */
   .ticks { margin-left: 5px; color: var(--text-dim); }
   .ticks.read { color: #3ba7f5; }
-  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border: 1px solid var(--incoming-bubble-border, var(--border)); border-radius: 4px 12px 12px 12px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; }
+  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border: 1px solid var(--incoming-bubble-border, var(--border)); border-radius: 4px 16px 16px 16px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
   .msg.own { align-self: flex-end; }
-  .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 12px 4px 12px 12px; }
+  .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 18px 16px 3px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
   .bubble-time { position: absolute; right: 10px; bottom: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; pointer-events: none; }
   .msg.own .bubble-time { color: rgba(27,18,4,0.65); }
   .bubble-time .ticks.read { color: #2196f3; text-shadow: 0 0 1px rgba(255,255,255,0.5); }
@@ -1336,6 +1336,19 @@ PAGE = """
 
   .bio-box { width: 280px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; text-align: left; }
   .settings-body { flex: 1; overflow-y: auto; padding: 18px 20px 100px; max-width: 480px; width: 100%; box-sizing: border-box; margin: 0 auto; }
+  .settings-card-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin: 18px 4px 8px; }
+  .settings-card-title:first-child { margin-top: 0; }
+  .settings-card { background: var(--panel-raised); border-radius: 14px; padding: 0 16px; }
+  .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-row-label { font-size: 14px; flex: 1; }
+  .settings-row select { max-width: 130px; }
+  .switch { position: relative; display: inline-block; width: 44px; height: 26px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; inset: 0; background: var(--border); transition: 0.2s; border-radius: 999px; cursor: pointer; }
+  .switch .slider:before { content: ""; position: absolute; height: 20px; width: 20px; left: 3px; bottom: 3px; background: #fff; transition: 0.2s; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider:before { transform: translateX(18px); }
   #bottomNav {
     position: fixed; left: 20px; right: 20px;
     bottom: max(16px, calc(env(safe-area-inset-bottom) + 12px));
@@ -1397,7 +1410,7 @@ PAGE = """
   <header>
     <div class="brand">Частота<span class="dot">.</span></div>
     <div class="header-right">
-      <button class="icon-btn" id="supportBtn" title="Техподдержка">🛟</button>
+      <button class="icon-btn" id="supportBtn" title="Техподдержка"></button>
       <button class="icon-btn" id="themeBtn">🌙</button>
     </div>
   </header>
@@ -1474,27 +1487,47 @@ PAGE = """
     <div style="width:34px;"></div>
   </header>
   <div class="settings-body">
-    <button class="icon-btn" id="themeBtnSettings" style="width:100%; margin-bottom:16px;">🌙 Сменить тему</button>
-    <div style="font-size:13px; color:var(--text-dim);">Кто видит мой статус "В сети"</div>
-    <select id="privacySelect" style="width:100%; margin-top:6px;">
-      <option value="all">Все</option>
-      <option value="contacts">Только контакты</option>
-      <option value="none">Никто</option>
-    </select>
-    <label style="display:flex; align-items:center; gap:10px; margin-top:16px; font-size:13px;">
-      <input type="checkbox" id="hideForwardCheck">
-      Скрыть профиль при пересылке моих сообщений (моё имя будет некликабельным)
-    </label>
-    <label style="display:flex; align-items:center; gap:10px; margin-top:16px; font-size:13px;">
-      <input type="checkbox" id="factsEnabledCheck" checked>
-      Показывать интересные факты при запуске
-    </label>
-    <label style="display:flex; align-items:center; gap:10px; margin-top:16px; font-size:13px;">
-      <input type="checkbox" id="typingEnabledCheck" checked>
-      Показывать собеседникам, что я печатаю
-    </label>
-    <button id="logoutBtnSettings" class="icon-btn" style="width:100%; margin-top:24px;">Выйти из аккаунта</button>
-    <button id="deleteAccountBtn" class="danger" style="width:100%; margin-top:12px; background:none; border:1px solid var(--danger); color:var(--danger);">Удалить аккаунт</button>
+    <div class="settings-card-title">Оформление</div>
+    <div class="settings-card">
+      <div class="settings-row" id="themeBtnSettings" style="cursor:pointer;">
+        <span class="settings-row-label">Тёмная тема</span>
+        <label class="switch"><input type="checkbox" id="themeToggle"><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="settings-card-title">Приватность</div>
+    <div class="settings-card">
+      <div class="settings-row">
+        <span class="settings-row-label">Кто видит мой статус "В сети"</span>
+        <select id="privacySelect">
+          <option value="all">Все</option>
+          <option value="contacts">Контакты</option>
+          <option value="none">Никто</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label">Скрыть профиль при пересылке моих сообщений</span>
+        <label class="switch"><input type="checkbox" id="hideForwardCheck"><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="settings-card-title">Интерфейс</div>
+    <div class="settings-card">
+      <div class="settings-row">
+        <span class="settings-row-label">Показывать интересные факты при запуске</span>
+        <label class="switch"><input type="checkbox" id="factsEnabledCheck" checked><span class="slider"></span></label>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label">Показывать собеседникам, что я печатаю</span>
+        <label class="switch"><input type="checkbox" id="typingEnabledCheck" checked><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="settings-card-title">Аккаунт</div>
+    <div class="settings-card">
+      <button id="logoutBtnSettings" class="icon-btn" style="width:100%; margin:12px 0;">Выйти из аккаунта</button>
+      <button id="deleteAccountBtn" class="danger" style="width:100%; margin-bottom:12px; background:none; border:1px solid var(--danger); color:var(--danger);">Удалить аккаунт</button>
+    </div>
   </div>
 </div>
 
@@ -1575,7 +1608,7 @@ PAGE = """
     <span>Чаты</span>
   </button>
   <button class="nav-tab" id="navSettingsBtn" data-tab="settings">
-    <svg viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V19.5a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H4.5a2 2 0 110-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H10a1.7 1.7 0 001-1.55V4.5a2 2 0 114 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V10a1.7 1.7 0 001.55 1h.09a2 2 0 110 4h-.09a1.7 1.7 0 00-1.55 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
     <span>Настройки</span>
   </button>
   <button class="nav-tab" id="navProfileBtn" data-tab="profile">
@@ -1602,12 +1635,29 @@ PAGE = """
     document.body.classList.toggle('light', theme === 'light');
     const btn = document.getElementById('themeBtn');
     if (btn) btn.textContent = theme === 'light' ? '☀️' : '🌙';
+    const toggle = document.getElementById('themeToggle');
+    if (toggle) toggle.checked = theme === 'dark';
   }
   applyTheme(localStorage.getItem('chastota_theme') || 'dark');
   document.getElementById('themeBtn').addEventListener('click', () => {
     const next = document.body.classList.contains('light') ? 'dark' : 'light';
     applyTheme(next);
     localStorage.setItem('chastota_theme', next);
+  });
+  document.getElementById('themeToggle').addEventListener('change', (e) => {
+    const next = e.target.checked ? 'dark' : 'light';
+    applyTheme(next);
+    localStorage.setItem('chastota_theme', next);
+  });
+  // Клик по всей строке настройки (не только по самому тумблеру) тоже переключает — привычнее
+  document.querySelectorAll('.settings-row').forEach(row => {
+    const toggle = row.querySelector('.switch input');
+    if (!toggle) return;
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.switch')) return; // сам тумблер уже обработает клик, не дублируем
+      toggle.click();
+    });
   });
 
   const NAV_VISIBLE_SCREENS = ['dashScreen', 'profileScreen', 'settingsScreen'];
@@ -1783,6 +1833,7 @@ PAGE = """
   function pickRandomFact() {
     return FACTS[Math.floor(Math.random() * FACTS.length)];
   }
+  document.getElementById('supportBtn').textContent = (navigator.language || 'ru').toLowerCase().startsWith('ru') ? 'Поддержка' : 'Support';
 
   let splashTargetScreen = 'registerScreen';
 
@@ -2331,7 +2382,10 @@ PAGE = """
     // к списку переписок, даже если ничего не отправили. Список теперь строится только из реальных
     // сообщений (сервер), контакт появится там сам, как только что-то реально отправишь.
     const cachedEntry = contactsCache.find(c => c.username === contact.username);
-    if (cachedEntry && cachedEntry.unread) { cachedEntry.unread = 0; } // не ждём опроса — гасим кружок сразу
+    if (cachedEntry && cachedEntry.unread) {
+      cachedEntry.unread = 0; // не ждём опроса — гасим кружок сразу
+      renderContacts(contactsCache); // и правда перерисовываем список/бейдж на вкладке "Чаты", а не просто меняем данные молча
+    }
 
     // Если чат секретный и стоит пароль — просим его перед открытием
     if (contact.is_secret && contact.has_password) {
@@ -2409,6 +2463,7 @@ PAGE = """
       lastRenderedDateKey = ''; // пересчитаем разделители дат заново для склейки со старыми
       const tempDiv = document.createElement('div');
       r.data.messages.forEach(m => {
+        if (m.deleted) return; // как и в renderMessage — удалённые "у всех" не рисуем (иначе виден пустой пузырь с одним временем)
         messagesById[m.id] = m;
         insertDateSeparatorInto(tempDiv, m);
         const div = document.createElement('div');
@@ -2915,7 +2970,9 @@ PAGE = """
     const area = document.getElementById('messages');
     const wasNearBottom = (area.scrollHeight - area.scrollTop - area.clientHeight) < 120;
     area.appendChild(div);
-    const shouldStickToBottom = isOwn || wasNearBottom;
+    // если сейчас идёт (или только что закончилась) подгрузка старых сообщений — не дёргаем экран вниз,
+    // иначе новое сообщение "перебивает" восстановление позиции чтения истории
+    const shouldStickToBottom = (isOwn || wasNearBottom) && !isLoadingOlderMessages && !suppressScrollLoad;
     if (shouldStickToBottom) {
       area.scrollTop = area.scrollHeight;
       // фото/картинка может догрузиться позже и растянуть разметку уже ПОСЛЕ прокрутки —
