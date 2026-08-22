@@ -2300,7 +2300,8 @@ PAGE = """
   document.getElementById('typingEnabledCheck').addEventListener('change', (e) => {
     localStorage.setItem('chastota_typing_enabled', e.target.checked ? '1' : '0');
   });
-  document.getElementById('themeBtnSettings').addEventListener('click', () => document.getElementById('themeBtn').click());
+  // (клик по строке теперь обрабатывает общий делегированный обработчик ниже — раньше тут был
+  // отдельный клик-хендлер на всю строку, который включал тему ДВАЖДЫ вместе с самим тумблером и отменял переключение)
   async function loadMyPhotos() {
     const list = document.getElementById('myPhotosList');
     list.innerHTML = '';
