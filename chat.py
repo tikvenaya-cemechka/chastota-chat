@@ -5,6 +5,8 @@ import re
 import time
 import secrets
 import os
+import json
+import requests
 from flask import Flask, render_template_string, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
@@ -25,6 +27,80 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'chastota.db')  # абсолютный путь — чтобы файл базы всегда был один и тот же
 ONLINE_SECONDS = 20  # если человек делал запрос за последние N секунд — считаем "в сети"
 TYPING_SECONDS = 3
+
+# --- Push-уведомления (Firebase Cloud Messaging, HTTP v1 API — старый Legacy API Google отключил в 2024) ---
+# Положи файл сервис-аккаунта Firebase рядом с chat.py под этим именем. Если файла нет — пуши просто
+# тихо не отправляются, остальной чат при этом работает как обычно.
+FIREBASE_SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, 'firebase-service-account.json')
+_fcm_access_token_cache = {'token': None, 'expires_at': 0}
+
+
+def get_fcm_access_token():
+    """Обменивает сервис-аккаунт Firebase на короткоживущий OAuth2-токен для FCM HTTP v1."""
+    if _fcm_access_token_cache['token'] and time.time() < _fcm_access_token_cache['expires_at'] - 60:
+        return _fcm_access_token_cache['token']
+    if not os.path.exists(FIREBASE_SERVICE_ACCOUNT_PATH):
+        return None
+    try:
+        import jwt  # PyJWT — pip install "pyjwt[crypto]" --break-system-packages
+        with open(FIREBASE_SERVICE_ACCOUNT_PATH) as f:
+            sa = json.load(f)
+        now = int(time.time())
+        payload = {
+            'iss': sa['client_email'],
+            'scope': 'https://www.googleapis.com/auth/firebase.messaging',
+            'aud': 'https://oauth2.googleapis.com/token',
+            'iat': now, 'exp': now + 3600,
+        }
+        assertion = jwt.encode(payload, sa['private_key'], algorithm='RS256')
+        resp = requests.post('https://oauth2.googleapis.com/token', data={
+            'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            'assertion': assertion,
+        }, timeout=8)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        _fcm_access_token_cache['token'] = data['access_token']
+        _fcm_access_token_cache['expires_at'] = now + data.get('expires_in', 3600)
+        return data['access_token']
+    except Exception:
+        return None
+
+
+def send_push_notification(username, title, body, data=None):
+    """Шлёт push всем устройствам пользователя через FCM. Сама по себе ошибка push
+    никогда не должна ронять отправку самого сообщения — поэтому всё тихо проглатывается."""
+    if not os.path.exists(FIREBASE_SERVICE_ACCOUNT_PATH):
+        return
+    try:
+        with open(FIREBASE_SERVICE_ACCOUNT_PATH) as f:
+            project_id = json.load(f)['project_id']
+        access_token = get_fcm_access_token()
+        if not access_token:
+            return
+        conn = get_db()
+        rows = conn.execute('SELECT token FROM push_tokens WHERE username=?', (username,)).fetchall()
+        conn.close()
+        url = 'https://fcm.googleapis.com/v1/projects/' + project_id + '/messages:send'
+        headers = {'Authorization': 'Bearer ' + access_token, 'Content-Type': 'application/json'}
+        for r in rows:
+            payload = {'message': {
+                'token': r['token'],
+                'notification': {'title': title, 'body': body},
+                'data': {k: str(v) for k, v in (data or {}).items()},
+            }}
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=8)
+                if resp.status_code == 404:
+                    # токен больше не действителен (переустановка приложения и т.п.) — чистим его
+                    conn2 = get_db()
+                    conn2.execute('DELETE FROM push_tokens WHERE token=?', (r['token'],))
+                    conn2.commit()
+                    conn2.close()
+            except requests.RequestException:
+                pass
+    except Exception:
+        pass
 
 
 @app.after_request
@@ -77,6 +153,10 @@ def init_db():
     )''')
     conn.execute('''CREATE TABLE IF NOT EXISTS avatar_photos (
         id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, data TEXT, created_at TEXT
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS push_tokens (
+        username TEXT, token TEXT, platform TEXT, updated_at TEXT,
+        PRIMARY KEY (username, token)
     )''')
     # На случай если база уже существует со старой структурой — добавляем недостающие колонки
     for stmt in [
@@ -441,6 +521,39 @@ def api_delete_account():
     conn.execute('DELETE FROM blocked_users WHERE blocker=? OR blocked=?', (username, username))
     conn.execute('DELETE FROM secret_chats WHERE owner=? OR contact=?', (username, username))
     conn.execute('DELETE FROM avatar_photos WHERE username=?', (username,))
+    conn.execute('DELETE FROM push_tokens WHERE username=?', (username,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/register_push_token', methods=['POST'])
+def api_register_push_token():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    token = data.get('token', '').strip()
+    platform = data.get('platform', 'android')
+    if not token:
+        return jsonify({'error': 'bad request'}), 400
+    conn = get_db()
+    conn.execute('''INSERT INTO push_tokens (username, token, platform, updated_at) VALUES (?,?,?,?)
+        ON CONFLICT(username, token) DO UPDATE SET updated_at=excluded.updated_at''',
+        (me['username'], token, platform, now_iso()))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/unregister_push_token', methods=['POST'])
+def api_unregister_push_token():
+    me = require_auth()
+    if not me:
+        return jsonify({'error': 'unauthorized'}), 401
+    token = (request.json or {}).get('token', '').strip()
+    conn = get_db()
+    conn.execute('DELETE FROM push_tokens WHERE username=? AND token=?', (me['username'], token))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
@@ -521,6 +634,24 @@ def api_send_message():
     msg_id = cur.lastrowid
     conn.close()
     touch_active(me['username'])
+    # push-уведомление получателю — секретные чаты без текста-превью (не палим содержимое), обычные — с коротким текстом
+    try:
+        if is_secret:
+            push_body = 'Новое сообщение в секретном чате'
+        elif attachment_type == 'photo':
+            push_body = '📷 Фото'
+        elif attachment_type == 'voice':
+            push_body = '🎤 Голосовое сообщение'
+        elif attachment_type == 'file':
+            push_body = '📄 Файл'
+        elif attachment_type == 'location':
+            push_body = '📍 Геопозиция'
+        else:
+            push_body = (text or '')[:120]
+        push_title = me.get('name') or me['username']
+        send_push_notification(to_user, push_title, push_body, {'from': me['username'], 'chat_type': 'secret' if is_secret else 'normal'})
+    except Exception:
+        pass  # push не должен мешать самой отправке сообщения
     return jsonify({'id': msg_id, 'from_user': me['username'], 'to_user': to_user, 'text': text,
                      'time': time_str, 'read': 0, 'edited': 0, 'deleted': 0,
                      'attachment_type': attachment_type, 'attachment_data': attachment_data,
@@ -1169,7 +1300,14 @@ PAGE = """
   button, .contact-item, .msg, .icon-btn { transition: background 0.15s ease, opacity 0.15s ease, transform 0.12s ease; }
   .contact-item:active, .icon-btn:active, button:active { transform: scale(0.97); }
   .center { align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; }
-  .splash-logo { font-size: 30px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
+  .splash-logo-anim { font-family: 'Fraunces', serif; font-weight: 700; font-size: 40px; color: #ffffff; letter-spacing: -0.01em; display: flex; justify-content: center; margin-bottom: 4px; }
+  .splash-letter-ch { display: inline-block; animation: chSlideLeft 0.7s cubic-bezier(.22,.85,.32,1) both; }
+  .splash-letter-rest { display: inline-block; animation: restReveal 0.6s cubic-bezier(.22,.85,.32,1) both; animation-delay: 0.05s; }
+  @keyframes chSlideLeft { from { transform: translateX(46px); } to { transform: translateX(0); } }
+  @keyframes restReveal { from { clip-path: inset(0 100% 0 0); opacity: 0.3; } to { clip-path: inset(0 0% 0 0); opacity: 1; } }
+  .splash-wave-track { overflow: hidden; width: 170px; height: 26px; margin: 2px auto 14px; }
+  .splash-wave-text { display: inline-block; font-size: 22px; line-height: 26px; color: var(--accent); letter-spacing: 1px; white-space: nowrap; animation: waveScroll 1.6s linear infinite; }
+  @keyframes waveScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
   .splash-fact { font-size: 15px; color: var(--text-dim); max-width: 320px; line-height: 1.55; min-height: 60px; }
   .splash-continue-btn { opacity: 0; pointer-events: none; transition: opacity 0.7s ease; background: var(--accent); color: #1b1204; border: none; border-radius: 10px; padding: 13px 34px; font-weight: 600; font-size: 15px; cursor: pointer; }
   .splash-continue-btn.visible { opacity: 1; pointer-events: auto; }
@@ -1372,8 +1510,11 @@ PAGE = """
 </head>
 <body>
 
-<div id="splashScreen" class="screen center active visible">
-  <div class="splash-logo">📻 Частота</div>
+<div id="splashScreen" class="screen center visible active" style="background:#12161f;">
+  <div class="splash-logo-anim">
+    <span class="splash-letter-ch">Ч</span><span class="splash-letter-rest">астота</span>
+  </div>
+  <div class="splash-wave-track"><span class="splash-wave-text">~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span></div>
   <div class="splash-fact" id="splashFact"></div>
   <button id="splashContinueBtn" class="splash-continue-btn">Продолжить</button>
 </div>
