@@ -1305,8 +1305,8 @@ PAGE = """
   .splash-letter-rest { display: inline-block; animation: restReveal 0.6s cubic-bezier(.22,.85,.32,1) both; animation-delay: 0.05s; }
   @keyframes chSlideLeft { from { transform: translateX(46px); } to { transform: translateX(0); } }
   @keyframes restReveal { from { clip-path: inset(0 100% 0 0); opacity: 0.3; } to { clip-path: inset(0 0% 0 0); opacity: 1; } }
-  .splash-wave-track { overflow: hidden; width: 170px; height: 26px; margin: 2px auto 14px; }
-  .splash-wave-text { display: inline-block; font-size: 22px; line-height: 26px; color: var(--accent); letter-spacing: 1px; white-space: nowrap; animation: waveScroll 1.6s linear infinite; }
+  .splash-wave-track { overflow: hidden; width: 220px; height: 36px; margin: 4px auto 16px; }
+  .splash-wave-text { display: inline-block; font-size: 32px; line-height: 36px; color: var(--accent); letter-spacing: 2px; white-space: nowrap; animation: waveScroll 5s linear infinite; }
   @keyframes waveScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
   .splash-fact { font-size: 15px; color: var(--text-dim); max-width: 320px; line-height: 1.55; min-height: 60px; }
   .splash-continue-btn { opacity: 0; pointer-events: none; transition: opacity 0.7s ease; background: var(--accent); color: #1b1204; border: none; border-radius: 10px; padding: 13px 34px; font-weight: 600; font-size: 15px; cursor: pointer; }
@@ -1515,8 +1515,6 @@ PAGE = """
     <span class="splash-letter-ch">Ч</span><span class="splash-letter-rest">астота</span>
   </div>
   <div class="splash-wave-track"><span class="splash-wave-text">~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span></div>
-  <div class="splash-fact" id="splashFact"></div>
-  <button id="splashContinueBtn" class="splash-continue-btn">Продолжить</button>
 </div>
 <div id="registerScreen" class="screen center">
   <div><div class="logo">Частота<span class="dot">.</span></div><div class="tagline">создать аккаунт</div></div>
@@ -1654,10 +1652,6 @@ PAGE = """
 
     <div class="settings-card-title">Интерфейс</div>
     <div class="settings-card">
-      <div class="settings-row">
-        <span class="settings-row-label">Показывать интересные факты при запуске</span>
-        <label class="switch"><input type="checkbox" id="factsEnabledCheck" checked><span class="slider"></span></label>
-      </div>
       <div class="settings-row">
         <span class="settings-row-label">Показывать собеседникам, что я печатаю</span>
         <label class="switch"><input type="checkbox" id="typingEnabledCheck" checked><span class="slider"></span></label>
@@ -1979,15 +1973,7 @@ PAGE = """
   let splashTargetScreen = 'registerScreen';
 
   window.addEventListener('load', async () => {
-    const factsEnabled = localStorage.getItem('chastota_facts_enabled') !== '0';
-    const factEl = document.getElementById('splashFact');
-    if (factsEnabled) {
-      factEl.textContent = pickRandomFact();
-      factEl.style.display = 'block';
-    } else {
-      factEl.style.display = 'none';
-    }
-    const minWait = new Promise(resolve => setTimeout(resolve, 150)); // кнопка "Продолжить" теперь всегда почти мгновенная
+    const minWait = new Promise(resolve => setTimeout(resolve, 400)); // чтобы заставка не мелькала совсем незаметно
     const authCheck = (async () => {
       if (token) {
         const r = await api('/api/me');
@@ -2004,10 +1990,7 @@ PAGE = """
       splashTargetScreen = 'registerScreen';
     })();
     await Promise.all([minWait, authCheck]);
-    document.getElementById('splashContinueBtn').classList.add('visible');
-  });
-
-  document.getElementById('splashContinueBtn').addEventListener('click', () => {
+    // заставка уходит сама, без нажатия кнопки
     showScreen(splashTargetScreen);
     if (splashTargetScreen === 'dashScreen') { startPolling(); checkStorageWarning(); setActiveNavTab('chats'); }
   });
@@ -2418,7 +2401,6 @@ PAGE = """
   function openSettingsScreen() {
     document.getElementById('privacySelect').value = me.privacy_online || 'all';
     document.getElementById('hideForwardCheck').checked = !!me.hide_forward_link;
-    document.getElementById('factsEnabledCheck').checked = localStorage.getItem('chastota_facts_enabled') !== '0';
     document.getElementById('typingEnabledCheck').checked = localStorage.getItem('chastota_typing_enabled') !== '0';
     showScreen('settingsScreen');
     setActiveNavTab('settings');
@@ -2434,9 +2416,6 @@ PAGE = """
     const hide_forward_link = e.target.checked;
     await api('/api/update_forward_privacy', { method: 'POST', body: { hide_forward_link } });
     me.hide_forward_link = hide_forward_link;
-  });
-  document.getElementById('factsEnabledCheck').addEventListener('change', (e) => {
-    localStorage.setItem('chastota_facts_enabled', e.target.checked ? '1' : '0');
   });
   document.getElementById('typingEnabledCheck').addEventListener('change', (e) => {
     localStorage.setItem('chastota_typing_enabled', e.target.checked ? '1' : '0');
