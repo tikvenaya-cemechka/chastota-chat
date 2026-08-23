@@ -539,12 +539,12 @@ importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js'
 importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js');
 
 firebase.initializeApp({
-  apiKey: "ЗАПОЛНИ_ИЗ_FIREBASE_CONSOLE",
-  authDomain: "ЗАПОЛНИ.firebaseapp.com",
-  projectId: "ЗАПОЛНИ",
-  storageBucket: "ЗАПОЛНИ.appspot.com",
-  messagingSenderId: "ЗАПОЛНИ",
-  appId: "ЗАПОЛНИ"
+  apiKey: "AIzaSyBQiTNdJ9WZyELxInxF9sYk5mWEOyGDFTM",
+  authDomain: "chasota-8bf93.firebaseapp.com",
+  projectId: "chasota-8bf93",
+  storageBucket: "chasota-8bf93.firebasestorage.app",
+  messagingSenderId: "249795720659",
+  appId: "1:249795720659:web:9e97eadeb115d2edadab26"
 });
 
 const messaging = firebase.messaging();
@@ -2086,12 +2086,12 @@ PAGE = """
   // ВАЖНО: apiKey/projectId/... ниже должны быть скопированы из Firebase Console (Project settings →
   // General → раздел "Your apps" → веб-приложение) и точно совпадать с тем, что в firebase-messaging-sw.js
   const FIREBASE_WEB_CONFIG = {
-    apiKey: "ЗАПОЛНИ_ИЗ_FIREBASE_CONSOLE",
-    authDomain: "ЗАПОЛНИ.firebaseapp.com",
-    projectId: "ЗАПОЛНИ",
-    storageBucket: "ЗАПОЛНИ.appspot.com",
-    messagingSenderId: "ЗАПОЛНИ",
-    appId: "ЗАПОЛНИ",
+    apiKey: "AIzaSyBQiTNdJ9WZyELxInxF9sYk5mWEOyGDFTM",
+    authDomain: "chasota-8bf93.firebaseapp.com",
+    projectId: "chasota-8bf93",
+    storageBucket: "chasota-8bf93.firebasestorage.app",
+    messagingSenderId: "249795720659",
+    appId: "1:249795720659:web:9e97eadeb115d2edadab26",
   };
   const FIREBASE_VAPID_KEY = "ЗАПОЛНИ_VAPID_КЛЮЧ_ИЗ_FIREBASE_CONSOLE"; // Project settings → Cloud Messaging → Web Push certificates
   async function setupWebPush() {
