@@ -1337,9 +1337,9 @@ PAGE = """
   .splash-letter-rest { display: inline-block; animation: restReveal 0.6s cubic-bezier(.22,.85,.32,1) both; animation-delay: 0.05s; }
   @keyframes chSlideLeft { from { transform: translateX(46px); } to { transform: translateX(0); } }
   @keyframes restReveal { from { clip-path: inset(0 100% 0 0); opacity: 0.3; } to { clip-path: inset(0 0% 0 0); opacity: 1; } }
-  .splash-wave-track { overflow: hidden; width: 220px; height: 36px; margin: 4px auto 16px; }
-  .splash-wave-text { display: inline-block; font-size: 32px; line-height: 36px; color: var(--accent); letter-spacing: 2px; white-space: nowrap; animation: waveScroll 5s linear infinite; }
-  @keyframes waveScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  .splash-wave-track { overflow: hidden; width: 200px; height: 36px; margin: 4px auto 16px; }
+  .splash-wave-svg { display: block; width: 400px; height: 36px; animation: waveScroll 11s linear infinite; }
+  @keyframes waveScroll { from { transform: translateX(0); } to { transform: translateX(-200px); } }
   .splash-fact { font-size: 15px; color: var(--text-dim); max-width: 320px; line-height: 1.55; min-height: 60px; }
   .splash-continue-btn { opacity: 0; pointer-events: none; transition: opacity 0.7s ease; background: var(--accent); color: #1b1204; border: none; border-radius: 10px; padding: 13px 34px; font-weight: 600; font-size: 15px; cursor: pointer; }
   .splash-continue-btn.visible { opacity: 1; pointer-events: auto; }
@@ -1546,7 +1546,12 @@ PAGE = """
   <div class="splash-logo-anim">
     <span class="splash-letter-ch">Ч</span><span class="splash-letter-rest">астота</span>
   </div>
-  <div class="splash-wave-track"><span class="splash-wave-text">~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span></div>
+  <div class="splash-wave-track">
+    <svg class="splash-wave-svg" viewBox="0 0 400 36" xmlns="http://www.w3.org/2000/svg">
+      <path d="M0,18 Q10,4 20,18 Q30,32 40,18 Q50,4 60,18 Q70,32 80,18 Q90,4 100,18 Q110,32 120,18 Q130,4 140,18 Q150,32 160,18 Q170,4 180,18 Q190,32 200,18 Q210,4 220,18 Q230,32 240,18 Q250,4 260,18 Q270,32 280,18 Q290,4 300,18 Q310,32 320,18 Q330,4 340,18 Q350,32 360,18 Q370,4 380,18 Q390,32 400,18"
+            fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+  </div>
 </div>
 <div id="registerScreen" class="screen center">
   <div><div class="logo">Частота<span class="dot">.</span></div><div class="tagline">создать аккаунт</div></div>
