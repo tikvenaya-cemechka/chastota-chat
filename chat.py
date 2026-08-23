@@ -7,7 +7,7 @@ import secrets
 import os
 import json
 import requests
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 
@@ -525,6 +525,36 @@ def api_delete_account():
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/firebase-messaging-sw.js')
+def firebase_sw():
+    """Service worker для push-уведомлений в браузере (веб-версия). Должен отдаваться именно
+    с корня сайта — иначе у него будет не тот scope и он не увидит уведомления для всего сайта.
+    ВАЖНО: конфиг ниже (apiKey/projectId/...) должен быть ТОЧНО таким же, как в HTML ниже (FIREBASE_WEB_CONFIG) —
+    это конфиг веб-приложения из Firebase Console (Project settings → General → твоё веб-приложение),
+    НЕ тот файл сервис-аккаунта, что уже лежит на сервере для отправки push."""
+    sw_js = '''
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js');
+
+firebase.initializeApp({
+  apiKey: "ЗАПОЛНИ_ИЗ_FIREBASE_CONSOLE",
+  authDomain: "ЗАПОЛНИ.firebaseapp.com",
+  projectId: "ЗАПОЛНИ",
+  storageBucket: "ЗАПОЛНИ.appspot.com",
+  messagingSenderId: "ЗАПОЛНИ",
+  appId: "ЗАПОЛНИ"
+});
+
+const messaging = firebase.messaging();
+messaging.onBackgroundMessage((payload) => {
+  const title = (payload.notification && payload.notification.title) || 'Частота';
+  const body = (payload.notification && payload.notification.body) || '';
+  self.registration.showNotification(title, { body: body, icon: '/icon.png' });
+});
+'''
+    return Response(sw_js, mimetype='application/javascript')
 
 
 @app.route('/api/register_push_token', methods=['POST'])
@@ -1278,6 +1308,8 @@ PAGE = """
 <title>Частота</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js"></script>
 <style>
   :root {
     --bg: #12161f; --panel: #1b2130; --panel-raised: #232b3d;
@@ -1981,6 +2013,7 @@ PAGE = """
           me = r.data.user; contactsCache = r.data.contacts;
           renderContacts(contactsCache);
           updateNavProfileIcon();
+          setupWebPush();
           splashTargetScreen = 'dashScreen';
           return;
         } else {
@@ -2040,6 +2073,39 @@ PAGE = """
     setActiveNavTab('chats');
     startPolling();
     checkStorageWarning();
+    setupWebPush();
+  }
+
+  // --- Push-уведомления в браузере (веб-версия). В самом APK будет свой, нативный способ через Capacitor —
+  // этот код там просто не запускается (см. проверку window.Capacitor ниже), чтобы не мешать друг другу.
+  // ВАЖНО: apiKey/projectId/... ниже должны быть скопированы из Firebase Console (Project settings →
+  // General → раздел "Your apps" → веб-приложение) и точно совпадать с тем, что в firebase-messaging-sw.js
+  const FIREBASE_WEB_CONFIG = {
+    apiKey: "ЗАПОЛНИ_ИЗ_FIREBASE_CONSOLE",
+    authDomain: "ЗАПОЛНИ.firebaseapp.com",
+    projectId: "ЗАПОЛНИ",
+    storageBucket: "ЗАПОЛНИ.appspot.com",
+    messagingSenderId: "ЗАПОЛНИ",
+    appId: "ЗАПОЛНИ",
+  };
+  const FIREBASE_VAPID_KEY = "ЗАПОЛНИ_VAPID_КЛЮЧ_ИЗ_FIREBASE_CONSOLE"; // Project settings → Cloud Messaging → Web Push certificates
+  async function setupWebPush() {
+    if (window.Capacitor) return; // внутри APK — там будет отдельная нативная настройка push, не через браузер
+    if (FIREBASE_WEB_CONFIG.apiKey.indexOf('ЗАПОЛНИ') === 0) return; // Firebase ещё не настроен — молча выходим
+    if (!('serviceWorker' in navigator) || !('Notification' in window) || typeof firebase === 'undefined') return;
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return;
+      if (!firebase.apps.length) firebase.initializeApp(FIREBASE_WEB_CONFIG);
+      const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+      const messaging = firebase.messaging();
+      const currentToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: registration });
+      if (currentToken) {
+        await api('/api/register_push_token', { method: 'POST', body: { token: currentToken, platform: 'web' } });
+      }
+    } catch (e) {
+      // push — вспомогательная фича, ошибка тут не должна ничего ломать в самом чате
+    }
   }
 
   document.getElementById('logoutBtnSettings').addEventListener('click', async () => {
