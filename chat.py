@@ -1693,6 +1693,10 @@ PAGE = """
         <span class="settings-row-label">Показывать собеседникам, что я печатаю</span>
         <label class="switch"><input type="checkbox" id="typingEnabledCheck" checked><span class="slider"></span></label>
       </div>
+      <div class="settings-row" id="enablePushRow" style="cursor:pointer;">
+        <span class="settings-row-label">Включить push-уведомления в браузере</span>
+        <span style="font-size:18px;">🔔</span>
+      </div>
     </div>
 
     <div class="settings-card-title">Аккаунт</div>
@@ -2018,7 +2022,6 @@ PAGE = """
           me = r.data.user; contactsCache = r.data.contacts;
           renderContacts(contactsCache);
           updateNavProfileIcon();
-          setupWebPush();
           splashTargetScreen = 'dashScreen';
           return;
         } else {
@@ -2078,7 +2081,6 @@ PAGE = """
     setActiveNavTab('chats');
     startPolling();
     checkStorageWarning();
-    setupWebPush();
   }
 
   // --- Push-уведомления в браузере (веб-версия). В самом APK будет свой, нативный способ через Capacitor —
@@ -2093,23 +2095,36 @@ PAGE = """
     messagingSenderId: "249795720659",
     appId: "1:249795720659:web:9e97eadeb115d2edadab26",
   };
-  const FIREBASE_VAPID_KEY = "ЗАПОЛНИ_VAPID_КЛЮЧ_ИЗ_FIREBASE_CONSOLE"; // Project settings → Cloud Messaging → Web Push certificates
-  async function setupWebPush() {
+  const FIREBASE_VAPID_KEY = "BP6rtI8qVA2pLDWZqUHFseDPNqmcYH2v1hN7Vw2eBSb2Bq_V8kcKL3KxWKPngcCZ5ZDGqXokwt0F9FYPXpirvwE";
+  async function setupWebPush(showFeedback) {
     if (window.Capacitor) return; // внутри APK — там будет отдельная нативная настройка push, не через браузер
     if (FIREBASE_WEB_CONFIG.apiKey.indexOf('ЗАПОЛНИ') === 0) return; // Firebase ещё не настроен — молча выходим
-    if (!('serviceWorker' in navigator) || !('Notification' in window) || typeof firebase === 'undefined') return;
+    if (!('serviceWorker' in navigator) || !('Notification' in window) || typeof firebase === 'undefined') {
+      if (showFeedback) alert('Этот браузер не поддерживает push-уведомления.');
+      return;
+    }
     try {
+      if (Notification.permission === 'denied') {
+        if (showFeedback) alert('Уведомления заблокированы для этого сайта в настройках браузера. Открой настройки сайта (значок замка/инфо рядом с адресом) и разреши уведомления вручную, потом попробуй снова.');
+        return;
+      }
       const permission = await Notification.requestPermission();
-      if (permission !== 'granted') return;
+      if (permission !== 'granted') {
+        if (showFeedback) alert('Уведомления не разрешены — без этого push работать не будет.');
+        return;
+      }
       if (!firebase.apps.length) firebase.initializeApp(FIREBASE_WEB_CONFIG);
       const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
       const messaging = firebase.messaging();
       const currentToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: registration });
       if (currentToken) {
         await api('/api/register_push_token', { method: 'POST', body: { token: currentToken, platform: 'web' } });
+        if (showFeedback) alert('Готово! Уведомления включены.');
+      } else if (showFeedback) {
+        alert('Не получилось получить токен устройства — попробуй ещё раз.');
       }
     } catch (e) {
-      // push — вспомогательная фича, ошибка тут не должна ничего ломать в самом чате
+      if (showFeedback) alert('Ошибка настройки push: ' + (e && e.message ? e.message : e));
     }
   }
 
@@ -2491,6 +2506,7 @@ PAGE = """
   document.getElementById('typingEnabledCheck').addEventListener('change', (e) => {
     localStorage.setItem('chastota_typing_enabled', e.target.checked ? '1' : '0');
   });
+  document.getElementById('enablePushRow').addEventListener('click', () => setupWebPush(true));
   // (клик по строке теперь обрабатывает общий делегированный обработчик ниже — раньше тут был
   // отдельный клик-хендлер на всю строку, который включал тему ДВАЖДЫ вместе с самим тумблером и отменял переключение)
   async function loadMyPhotos() {
