@@ -850,6 +850,9 @@ def api_unlock_secret_chat():
     if check_password_hash(secret['password_hash'], password):
         return jsonify({'ok': True})
     return jsonify({'ok': False, 'error': 'wrong password'}), 403
+
+
+@app.route('/api/edit_message', methods=['POST'])
 def api_edit_message():
     me = require_auth()
     if not me:
@@ -1360,6 +1363,9 @@ PAGE = """
   .link-btn { background: none; border: none; color: var(--signal); cursor: pointer; font-size: 13.5px; text-decoration: underline; }
   .error-msg { color: var(--danger); font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; min-height: 16px; }
   .captcha-code { font-family: 'IBM Plex Mono', monospace; font-size: 34px; letter-spacing: 10px; background: var(--panel-raised); padding: 14px 24px; border-radius: 12px; color: var(--accent); }
+  .username-field-row { display: flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0 0 0 16px; width: 260px; }
+  .username-field-row span { color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; font-size: 15px; flex-shrink: 0; }
+  .username-field-row input { border: none; background: none; width: auto; flex: 1; padding: 12px 16px 12px 2px; }
 
   header { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
   .brand { font-family: 'Fraunces', serif; font-weight: 700; font-size: 19px; }
@@ -1389,11 +1395,8 @@ PAGE = """
   .profile-nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.45); color: #fff; border: none; width: 42px; height: 42px; border-radius: 50%; font-size: 22px; cursor: pointer; z-index: 5; backdrop-filter: blur(4px); }
   .profile-viewer-info { padding: 18px 24px 22px; font-size: 14.5px; line-height: 2; color: var(--text); background: var(--panel); border-radius: 22px 22px 0 0; margin-top: -18px; position: relative; z-index: 2; }
   .profile-viewer-info b { color: var(--text-dim); font-weight: 500; font-size: 12.5px; display: block; margin-bottom: 1px; }
-  #profileViewerOverlay { align-items: stretch !important; justify-content: flex-start !important; background: #000 !important; opacity: 0; transition: opacity 0.25s ease; }
+  #profileViewerOverlay { align-items: stretch !important; justify-content: flex-start !important; background: var(--bg) !important; opacity: 0; transition: opacity 0.25s ease; flex-direction: column; overflow-y: auto; }
   #profileViewerOverlay.visible { opacity: 1; }
-  #profileViewerPhotoArea { background: #000; min-height: 55vh; }
-  #profileViewerClose { width: calc(100% - 40px); margin: 0 20px 20px; }
-  #profileCloseTop { position: absolute; top: 16px; left: 16px; z-index: 6; background: rgba(0,0,0,0.45); color: #fff; border: none; width: 38px; height: 38px; border-radius: 50%; font-size: 18px; cursor: pointer; backdrop-filter: blur(4px); }
   #birthdayBanner { background: rgba(255,193,7,0.12); color: #e0a800; font-size: 13px; padding: 10px 16px; text-align: center; }
   #forwardToolbar { background: var(--panel-raised); padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; }
   #forwardToolbar input { flex: 1; min-width: 0; }
@@ -1557,7 +1560,7 @@ PAGE = """
   <div><div class="logo">Частота<span class="dot">.</span></div><div class="tagline">создать аккаунт</div></div>
   <input type="text" id="regName" placeholder="Имя" maxlength="20">
   <input type="text" id="regSurname" placeholder="Фамилия (необязательно)" maxlength="20">
-  <input type="text" id="regUsername" placeholder="Юзернейм (@nickname)" maxlength="20">
+  <div class="username-field-row"><span>@</span><input type="text" id="regUsername" placeholder="nickname" maxlength="20"></div>
   <input type="password" id="regPassword" placeholder="Пароль">
   <button class="primary" id="regBtn">Продолжить</button>
   <div class="error-msg" id="regError"></div>
@@ -1575,7 +1578,7 @@ PAGE = """
 
 <div id="loginScreen" class="screen center">
   <div><div class="logo">Частота<span class="dot">.</span></div><div class="tagline">вход в аккаунт</div></div>
-  <input type="text" id="loginUsername" placeholder="Юзернейм (@nickname)">
+  <div class="username-field-row"><span>@</span><input type="text" id="loginUsername" placeholder="nickname"></div>
   <input type="password" id="loginPassword" placeholder="Пароль">
   <button class="primary" id="loginBtn">Войти</button>
   <div class="error-msg" id="loginError"></div>
@@ -1615,7 +1618,7 @@ PAGE = """
     <div id="searchResult"></div>
   </div>
   <div id="savedChatBtn" class="contact-item" style="margin:0 12px;">
-    <div class="avatar-box" style="background:var(--accent); color:#1b1204;">⭐</div>
+    <div class="avatar-box" id="savedChatAvatarBox" style="background:#38a1e8; padding:0;"></div>
     <div><div class="contact-name">Избранное</div><div class="contact-username">заметки, ссылки, файлы — видно только тебе</div></div>
   </div>
   <div class="contacts-title">Недавние переписки</div>
@@ -1642,10 +1645,7 @@ PAGE = """
     <div style="font-size:13px; color:var(--text-dim);">Имя</div>
     <input type="text" id="nameInput" placeholder="Твоё имя" style="width:100%; margin-top:6px; margin-bottom:12px;">
     <div style="font-size:13px; color:var(--text-dim);">Юзернейм</div>
-    <div style="display:flex; align-items:center; gap:6px; margin-top:6px; margin-bottom:4px;">
-      <span style="color:var(--text-dim);">@</span>
-      <input type="text" id="usernameInput" placeholder="username" style="flex:1;">
-    </div>
+    <div class="username-field-row" style="width:100%; margin-top:6px; margin-bottom:4px;"><span>@</span><input type="text" id="usernameInput" placeholder="username" style="flex:1;"></div>
     <div id="usernameError" style="color:var(--danger); font-size:12px; min-height:16px;"></div>
     <textarea id="bioInput" placeholder="Расскажи что-нибудь о себе..."></textarea>
     <div style="margin-top:12px; font-size:13px; color:var(--text-dim);">День рождения</div>
@@ -1761,17 +1761,33 @@ PAGE = """
     </div>
   </div>
 </div>
-<div id="profileViewerOverlay" class="msg-menu-overlay" style="display:none; flex-direction:column;">
-  <div id="profileViewerPhotoArea" style="position:relative; flex:1; display:flex; align-items:center; justify-content:center;">
-    <button id="profileCloseTop">✕</button>
+<div id="profileViewerOverlay" class="msg-menu-overlay" style="display:none;">
+  <header style="background:none; border-bottom:none;">
+    <button class="back-btn" id="profileCloseTop">←</button>
+    <div class="brand" style="font-size:16px;">Профиль</div>
+    <div style="width:34px;"></div>
+  </header>
+  <div class="settings-body">
+    <div style="display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:18px;">
+      <div class="avatar-box" id="profileViewerAvatarBox" style="width:88px; height:88px; font-size:40px; cursor:pointer;"></div>
+      <div class="brand" id="profileViewerName" style="font-size:19px;"></div>
+    </div>
+    <div class="settings-card">
+      <div class="settings-row"><span class="settings-row-label">Юзернейм</span><span id="profileViewerUsername" style="color:var(--text-dim);"></span></div>
+      <div class="settings-row"><span class="settings-row-label">День рождения</span><span id="profileViewerBirthday" style="color:var(--text-dim);"></span></div>
+      <div class="settings-row"><span class="settings-row-label">О себе</span><span id="profileViewerBio" style="color:var(--text-dim); text-align:right; max-width:60%;"></span></div>
+    </div>
+    <div style="display:flex; gap:10px; margin-top:18px;">
+      <a id="profilePhotoDownload" download="photo.jpg" style="flex:1; display:none;"><button style="width:100%;">Скачать фото</button></a>
+    </div>
+  </div>
+</div>
+<div id="profilePhotoFullOverlay" class="msg-menu-overlay" style="display:none; flex-direction:column; background:#000 !important; align-items:stretch; justify-content:flex-start;">
+  <div style="position:relative; flex:1; display:flex; align-items:center; justify-content:center;">
+    <button id="profilePhotoFullClose" style="position:absolute; top:16px; left:16px; z-index:6; background:rgba(0,0,0,0.45); color:#fff; border:none; width:38px; height:38px; border-radius:50%; font-size:18px; cursor:pointer;">✕</button>
     <button id="profilePhotoPrev" class="profile-nav-arrow" style="left:10px;">‹</button>
     <img id="profileViewerImg" style="max-width:100%; max-height:100%; object-fit:contain;">
     <button id="profilePhotoNext" class="profile-nav-arrow" style="right:10px;">›</button>
-  </div>
-  <div id="profileViewerInfo" class="profile-viewer-info"></div>
-  <div style="display:flex; gap:10px; padding:0 20px 20px;">
-    <a id="profilePhotoDownload" download="photo.jpg" style="flex:1;"><button style="width:100%;">Скачать фото</button></a>
-    <button id="profileViewerClose">Закрыть</button>
   </div>
 </div>
 
@@ -1805,6 +1821,8 @@ PAGE = """
   let pollTimer = null;
   let messagesById = {}; // id -> msg object (для меню/редактирования/перевода)
   let lastRenderedDateKey = '';
+  const BOOKMARK_AVATAR_HTML = '<svg viewBox="0 0 24 24" width="60%" height="60%" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M6 3.5h12a.5.5 0 01.5.5v16.5l-6.5-4-6.5 4V4a.5.5 0 01.5-.5z"/></svg>';
+  document.getElementById('savedChatAvatarBox').innerHTML = BOOKMARK_AVATAR_HTML;
 
   // --- Тема ---
   function applyTheme(theme) {
@@ -2610,7 +2628,12 @@ PAGE = """
     } else {
       banner.style.display = 'none';
     }
-    renderChatStatus(contact);
+    const isSavedChat = me && contact.username === me.username;
+    if (isSavedChat) {
+      document.getElementById('chatUsername').innerHTML = '';
+    } else {
+      renderChatStatus(contact);
+    }
     document.getElementById('chatTyping').textContent = '';
     document.getElementById('messages').innerHTML = '';
     applyWallpaper(contact);
@@ -2651,16 +2674,17 @@ PAGE = """
   // --- Подгрузка старых сообщений при прокрутке наверх (чтобы не грузить всю историю разом) ---
   let hasMoreOlderMessages = false;
   let isLoadingOlderMessages = false;
-  let suppressScrollLoad = false; // подавляем подгрузку старых сообщений на время открытия/закрытия клавиатуры
+  let suppressOlderLoad = false; // ТОЛЬКО подавляет подгрузку старых сообщений (клавиатура/подгрузка) —
+                                  // НЕ должно влиять на обычное прилипание к низу при новых сообщениях (раньше влияло, это и был баг)
   async function loadOlderMessagesIfNeeded() {
     const area = document.getElementById('messages');
-    if (suppressScrollLoad || area.scrollTop > 60 || !hasMoreOlderMessages || isLoadingOlderMessages || !currentContact) return;
+    if (suppressOlderLoad || area.scrollTop > 60 || !hasMoreOlderMessages || isLoadingOlderMessages || !currentContact) return;
     isLoadingOlderMessages = true;
-    suppressScrollLoad = true; // глушим скролл-события на всё время загрузки и восстановления позиции —
+    suppressOlderLoad = true; // глушим скролл-события на всё время загрузки и восстановления позиции —
                                 // иначе программная прокрутка ниже сама провоцирует новый вызов, и получается цепная реакция
     const firstMsgDiv = area.querySelector('.msg[data-id]');
     const oldestId = firstMsgDiv ? parseInt(firstMsgDiv.dataset.id, 10) : 0;
-    if (!oldestId) { isLoadingOlderMessages = false; suppressScrollLoad = false; return; }
+    if (!oldestId) { isLoadingOlderMessages = false; suppressOlderLoad = false; return; }
     const prevHeight = area.scrollHeight;
     const r = await api('/api/load_older_messages?with=' + encodeURIComponent(currentContact.username) +
       '&secret=' + (currentContact.is_secret ? '1' : '0') + '&before_id=' + oldestId);
@@ -2697,7 +2721,7 @@ PAGE = """
     // отпускаем блокировку с запасом по времени — даём браузеру "успокоиться" после программной прокрутки,
     // прежде чем снова доверять событиям scroll как настоящему действию пользователя
     clearTimeout(window._afterLoadSuppressTimer);
-    window._afterLoadSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 450);
+    window._afterLoadSuppressTimer = setTimeout(() => { suppressOlderLoad = false; }, 450);
   }
   // Слушаем НЕ 'scroll' (его вызывает и код, и человек — не различить), а сам жест —
   // тогда программная прокрутка (после отправки, после подгрузки, после фокуса на поле и т.д.)
@@ -2711,14 +2735,14 @@ PAGE = """
     window._scrollDebounce = setTimeout(loadOlderMessagesIfNeeded, 150);
   }, { passive: true });
   document.getElementById('textInput').addEventListener('focus', () => {
-    suppressScrollLoad = true;
+    suppressOlderLoad = true;
     clearTimeout(window._kbSuppressTimer);
-    window._kbSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 700);
+    window._kbSuppressTimer = setTimeout(() => { suppressOlderLoad = false; }, 700);
   });
   document.getElementById('textInput').addEventListener('blur', () => {
-    suppressScrollLoad = true;
+    suppressOlderLoad = true;
     clearTimeout(window._kbSuppressTimer);
-    window._kbSuppressTimer = setTimeout(() => { suppressScrollLoad = false; }, 700);
+    window._kbSuppressTimer = setTimeout(() => { suppressOlderLoad = false; }, 700);
   });
 
   function promptSecretPassword(contact) {
@@ -3179,8 +3203,10 @@ PAGE = """
     const wasNearBottom = (area.scrollHeight - area.scrollTop - area.clientHeight) < 120;
     area.appendChild(div);
     // если сейчас идёт (или только что закончилась) подгрузка старых сообщений — не дёргаем экран вниз,
-    // иначе новое сообщение "перебивает" восстановление позиции чтения истории
-    const shouldStickToBottom = (isOwn || wasNearBottom) && !isLoadingOlderMessages && !suppressScrollLoad;
+    // иначе новое сообщение "перебивает" восстановление позиции чтения истории. ВАЖНО: суппресс клавиатуры
+    // (suppressOlderLoad) сюда больше НЕ входит — раньше входил, и из-за этого свои же отправленные
+    // сообщения не проскролливались вниз, если ты только что фокусировался на поле ввода (баг).
+    const shouldStickToBottom = (isOwn || wasNearBottom) && !isLoadingOlderMessages;
     if (shouldStickToBottom) {
       area.scrollTop = area.scrollHeight;
       // фото/картинка может догрузиться позже и растянуть разметку уже ПОСЛЕ прокрутки —
@@ -3778,44 +3804,42 @@ PAGE = """
     document.getElementById('photoPreviewOverlay').style.display = 'none';
   });
 
-  // --- Просмотр профиля контакта (клик по аватарке в шапке чата) ---
+  // --- Просмотр профиля контакта (клик по аватарке в шапке чата) — оформлен так же, как свой Профиль ---
   let profilePhotos = [];
   let profilePhotoIndex = 0;
   async function openProfileViewer(user) {
     const overlay = document.getElementById('profileViewerOverlay');
     overlay.style.display = 'flex';
-    requestAnimationFrame(() => overlay.classList.add('visible'));
-    document.getElementById('profileViewerImg').src = '';
-    const infoEl = document.getElementById('profileViewerInfo');
+    document.getElementById('profileViewerAvatarBox').innerHTML = avatarHtml(user);
+    document.getElementById('profileViewerName').innerHTML = escapeHtml(user.name) + officialBadge(user.official);
+    document.getElementById('profileViewerUsername').textContent = '@' + user.username;
     let birthdayText = 'не указан';
     if (user.birthday) {
       const bd = new Date(user.birthday + 'T00:00:00');
       if (!isNaN(bd.getTime())) birthdayText = bd.getDate() + ' ' + RU_MONTHS[bd.getMonth()];
     }
-    infoEl.innerHTML =
-      '<div><b>Имя пользователя:</b> @' + escapeHtml(user.username) + '</div>' +
-      '<div><b>День рождения:</b> ' + birthdayText + '</div>' +
-      '<div><b>О себе:</b> ' + (user.bio ? escapeHtml(user.bio) : 'не указано') + '</div>';
+    document.getElementById('profileViewerBirthday').textContent = birthdayText;
+    document.getElementById('profileViewerBio').textContent = user.bio || 'не указано';
     const r = await api('/api/get_photos?username=' + encodeURIComponent(user.username));
     profilePhotos = (r.ok && r.data.photos.length) ? r.data.photos : (user.avatar_photo ? [{ data: user.avatar_photo }] : []);
     profilePhotoIndex = 0;
+    document.getElementById('profileViewerAvatarBox').onclick = profilePhotos.length ? openProfilePhotoFull : null;
+  }
+  function openProfilePhotoFull() {
+    if (!profilePhotos.length) return;
+    document.getElementById('profilePhotoFullOverlay').style.display = 'flex';
     showProfilePhoto();
   }
   function showProfilePhoto() {
     const nav = profilePhotos.length > 1;
     document.getElementById('profilePhotoPrev').style.display = nav ? 'block' : 'none';
     document.getElementById('profilePhotoNext').style.display = nav ? 'block' : 'none';
-    if (!profilePhotos.length) {
-      document.getElementById('profileViewerImg').src = '';
-      document.getElementById('profilePhotoDownload').style.display = 'none';
-      return;
-    }
-    const photo = profilePhotos[profilePhotoIndex];
-    document.getElementById('profileViewerImg').src = photo.data;
-    const dl = document.getElementById('profilePhotoDownload');
-    dl.href = photo.data;
-    dl.style.display = 'block';
+    if (!profilePhotos.length) { document.getElementById('profileViewerImg').src = ''; return; }
+    document.getElementById('profileViewerImg').src = profilePhotos[profilePhotoIndex].data;
   }
+  document.getElementById('profilePhotoFullClose').addEventListener('click', () => {
+    document.getElementById('profilePhotoFullOverlay').style.display = 'none';
+  });
   document.getElementById('profilePhotoPrev').addEventListener('click', () => {
     if (!profilePhotos.length) return;
     profilePhotoIndex = (profilePhotoIndex - 1 + profilePhotos.length) % profilePhotos.length;
@@ -3826,28 +3850,11 @@ PAGE = """
     profilePhotoIndex = (profilePhotoIndex + 1) % profilePhotos.length;
     showProfilePhoto();
   });
-  (function attachProfileSwipe() {
-    const area = document.getElementById('profileViewerPhotoArea');
-    let startX = 0;
-    area.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; }, { passive: true });
-    area.addEventListener('touchend', (e) => {
-      const dx = e.changedTouches[0].clientX - startX;
-      if (Math.abs(dx) < 40 || !profilePhotos.length) return;
-      profilePhotoIndex = dx < 0
-        ? (profilePhotoIndex + 1) % profilePhotos.length
-        : (profilePhotoIndex - 1 + profilePhotos.length) % profilePhotos.length;
-      showProfilePhoto();
-    });
-  })();
-  function closeProfileViewer() {
-    const overlay = document.getElementById('profileViewerOverlay');
-    overlay.classList.remove('visible');
-    setTimeout(() => { overlay.style.display = 'none'; }, 200);
-  }
-  document.getElementById('profileViewerClose').addEventListener('click', closeProfileViewer);
-  document.getElementById('profileCloseTop').addEventListener('click', closeProfileViewer);
+  document.getElementById('profileCloseTop').addEventListener('click', () => {
+    document.getElementById('profileViewerOverlay').style.display = 'none';
+  });
   document.getElementById('savedChatBtn').addEventListener('click', () => {
-    openChat({ username: me.username, name: 'Избранное', avatar: '⭐', avatar_photo: null,
+    openChat({ username: me.username, name: 'Избранное', avatar: BOOKMARK_AVATAR_HTML, avatar_photo: null,
       online: false, blocked_by_me: false, is_secret: false, official: false });
   });
   document.getElementById('supportBtn').addEventListener('click', async () => {
@@ -3860,7 +3867,7 @@ PAGE = """
     }
   });
   document.getElementById('chatAvatar').addEventListener('click', () => {
-    if (currentContact) openProfileViewer(currentContact);
+    if (currentContact && currentContact.username !== (me && me.username)) openProfileViewer(currentContact);
   });
 
   // --- Шторка "у контакта сегодня день рождения" на главном экране ---
