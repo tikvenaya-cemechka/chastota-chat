@@ -1099,7 +1099,8 @@ def api_load_older_messages():
     with_user = request.args.get('with', '')
     want_secret = 1 if request.args.get('secret') == '1' else 0
     before_id = int(request.args.get('before_id', 0))
-    PAGE_SIZE = 20
+    PAGE_SIZE = 40  # крупнее, чем при первом открытии чата (20) — при подгрузке вглубь истории
+                    # уже не важна скорость первого экрана, зато меньше пауз при долгом скролле назад
     conn = get_db()
     rows = conn.execute('''
         SELECT id, from_user, to_user, text, time, read, edited, deleted, deleted_for, updated_at, attachment_type, attachment_data, attachment_duration, reply_to_id, forwarded_from, forwarded_from_name, forwarded_from_hidden, ttl_seconds, expire_at, secret, attachment_meta FROM messages
@@ -1327,8 +1328,8 @@ PAGE = """
     --nav-border: rgba(20,20,20,0.22);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  .screen { position: fixed; inset: 0; display: none; flex-direction: column; background: var(--bg); opacity: 0; transform: translateY(6px) scale(0.99); transition: opacity 0.22s ease, transform 0.22s ease; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; height: 100vh; height: var(--app-vh, 100vh); display: flex; flex-direction: column; overflow: hidden; }
+  .screen { position: fixed; top: 0; left: 0; right: 0; height: var(--app-vh, 100vh); display: none; flex-direction: column; background: var(--bg); opacity: 0; transform: translateY(6px) scale(0.99); transition: opacity 0.22s ease, transform 0.22s ease; }
   .screen.active { display: flex; }
   .screen.active.visible { opacity: 1; transform: translateY(0) scale(1); }
   * { scroll-behavior: smooth; }
@@ -1810,6 +1811,19 @@ PAGE = """
 </nav>
 
 <script>
+
+  // Реальная высота видимой области экрана (а не приблизительная 100vh) — именно из-за 100vh
+  // на телефонах при открытии клавиатуры экран "прыгал": обычные единицы vh не учитывают
+  // честно, сколько места реально осталось над клавиатурой, а visualViewport — учитывает.
+  function updateAppHeight() {
+    const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    document.documentElement.style.setProperty('--app-vh', h + 'px');
+  }
+  updateAppHeight();
+  window.addEventListener('resize', updateAppHeight);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', updateAppHeight);
+  }
 
   let me = null;
   let token = localStorage.getItem('chastota_token') || null;
