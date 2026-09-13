@@ -348,6 +348,8 @@ def get_contacts(username):
             continue
         if r['attachment_type'] == 'photo':
             preview = '📷 Фото'
+        elif r['attachment_type'] == 'video':
+            preview = '🎥 Видео'
         elif r['attachment_type'] == 'voice':
             preview = '🎤 Голосовое сообщение'
         elif r['attachment_type'] == 'file':
@@ -670,6 +672,8 @@ def api_send_message():
             push_body = 'Новое сообщение в секретном чате'
         elif attachment_type == 'photo':
             push_body = '📷 Фото'
+        elif attachment_type == 'video':
+            push_body = '🎥 Видео'
         elif attachment_type == 'voice':
             push_body = '🎤 Голосовое сообщение'
         elif attachment_type == 'file':
@@ -1396,8 +1400,7 @@ PAGE = """
   .profile-nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.45); color: #fff; border: none; width: 42px; height: 42px; border-radius: 50%; font-size: 22px; cursor: pointer; z-index: 5; backdrop-filter: blur(4px); }
   .profile-viewer-info { padding: 18px 24px 22px; font-size: 14.5px; line-height: 2; color: var(--text); background: var(--panel); border-radius: 22px 22px 0 0; margin-top: -18px; position: relative; z-index: 2; }
   .profile-viewer-info b { color: var(--text-dim); font-weight: 500; font-size: 12.5px; display: block; margin-bottom: 1px; }
-  #profileViewerOverlay { align-items: stretch !important; justify-content: flex-start !important; background: var(--bg) !important; opacity: 0; transition: opacity 0.25s ease; flex-direction: column; overflow-y: auto; }
-  #profileViewerOverlay.visible { opacity: 1; }
+  #profileViewerOverlay { align-items: stretch !important; justify-content: flex-start !important; background: var(--bg) !important; flex-direction: column; overflow-y: auto; }
   #birthdayBanner { background: rgba(255,193,7,0.12); color: #e0a800; font-size: 13px; padding: 10px 16px; text-align: center; }
   #forwardToolbar { background: var(--panel-raised); padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 13px; }
   #forwardToolbar input { flex: 1; min-width: 0; }
@@ -1494,6 +1497,7 @@ PAGE = """
   .composer-icon-btn.recording { background: #c0392b; color: #fff; animation: pulse 1s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
   .msg .bubble img.msg-photo { max-width: 220px; border-radius: 10px; display: block; margin-top: 4px; cursor: pointer; }
+  .msg .bubble video.msg-photo { max-width: 240px; max-height: 320px; border-radius: 10px; display: block; margin-top: 4px; }
   .bubble.has-photo { padding: 6px 6px 6px 6px; }
   .bubble.has-photo .bubble-time { background: rgba(0,0,0,0.45); color: #fff; padding: 2px 6px; border-radius: 8px; right: 12px; bottom: 12px; }
   .bubble.has-photo .bubble-time .ticks.read { color: #7ec8ff; }
@@ -1620,7 +1624,7 @@ PAGE = """
   </div>
   <div id="savedChatBtn" class="contact-item" style="margin:0 12px;">
     <div class="avatar-box" id="savedChatAvatarBox" style="background:#38a1e8; padding:0;"></div>
-    <div><div class="contact-name">Избранное</div><div class="contact-username">заметки, ссылки, файлы — видно только тебе</div></div>
+    <div><div class="contact-name">Избранное</div></div>
   </div>
   <div class="contacts-title">Недавние переписки</div>
   <div class="contacts-list" id="contactsList"></div>
@@ -1740,10 +1744,10 @@ PAGE = """
   </div>
   <div id="composer">
     <input type="file" id="wallpaperFileInput" accept="image/*" style="display:none;">
-    <input type="file" id="photoInput" accept="image/*" multiple style="display:none;">
+    <input type="file" id="photoInput" accept="image/*,video/*" multiple style="display:none;">
     <input type="file" id="fileInput" style="display:none;">
     <button class="composer-icon-btn" id="attachBtn" title="Прикрепить">📎</button>
-    <input type="text" id="textInput" placeholder="Сообщение...">
+    <input type="text" id="textInput" placeholder="Сообщение..." enterkeyhint="send" autocomplete="off">
     <button class="composer-icon-btn" id="voiceBtn" title="Удерживай, чтобы записать голосовое">🎤</button>
   </div>
   <div id="botActionBar" style="display:none;">
@@ -1835,7 +1839,7 @@ PAGE = """
   let pollTimer = null;
   let messagesById = {}; // id -> msg object (для меню/редактирования/перевода)
   let lastRenderedDateKey = '';
-  const BOOKMARK_AVATAR_HTML = '<svg viewBox="0 0 24 24" width="60%" height="60%" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M6 3.5h12a.5.5 0 01.5.5v16.5l-6.5-4-6.5 4V4a.5.5 0 01.5-.5z"/></svg>';
+  const BOOKMARK_AVATAR_HTML = '<div style="width:100%;height:100%;background:#38a1e8;display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" width="60%" height="60%" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M6 3.5h12a.5.5 0 01.5.5v16.5l-6.5-4-6.5 4V4a.5.5 0 01.5-.5z"/></svg></div>';
   document.getElementById('savedChatAvatarBox').innerHTML = BOOKMARK_AVATAR_HTML;
 
   // --- Тема ---
@@ -2657,7 +2661,7 @@ PAGE = """
     const fwdBar = document.getElementById('forwardPreviewBar');
     if (pendingForward && !forwardMultiSelected.length) {
       const p = pendingForward;
-      const label = p.attachment_type === 'photo' ? '📷 Фото' : p.attachment_type === 'voice' ? '🎤 Голосовое' :
+      const label = p.attachment_type === 'photo' ? '📷 Фото' : p.attachment_type === 'video' ? '🎥 Видео' : p.attachment_type === 'voice' ? '🎤 Голосовое' :
         p.attachment_type === 'file' ? '📄 Файл' : p.attachment_type === 'location' ? '📍 Геопозиция' : (p.text || '').slice(0, 90);
       document.getElementById('forwardPreviewText').textContent = label;
       document.getElementById('forwardPreviewHideSenderBtn').style.opacity = p.hideSender ? '1' : '0.5';
@@ -3239,6 +3243,8 @@ PAGE = """
     let bodyHtml = '';
     if (msg.attachment_type === 'photo' && msg.attachment_data) {
       bodyHtml = '<img class="msg-photo" src="' + msg.attachment_data + '">' + (msg.text ? '<div style="margin:6px 6px 18px;">' + escapeHtml(msg.text) + '</div>' : '');
+    } else if (msg.attachment_type === 'video' && msg.attachment_data) {
+      bodyHtml = '<video class="msg-photo" src="' + msg.attachment_data + '" controls preload="metadata"></video>' + (msg.text ? '<div style="margin:6px 6px 18px;">' + escapeHtml(msg.text) + '</div>' : '');
     } else if (msg.attachment_type === 'voice' && msg.attachment_data) {
       const mins = Math.floor((msg.attachment_duration || 0) / 60);
       const secs = String((msg.attachment_duration || 0) % 60).padStart(2, '0');
@@ -3265,10 +3271,10 @@ PAGE = """
     }
     if (msg.reply_to_id && messagesById[msg.reply_to_id]) {
       const q = messagesById[msg.reply_to_id];
-      const qText = q.text || (q.attachment_type === 'photo' ? '📷 Фото' : q.attachment_type === 'voice' ? '🎤 Голосовое' : q.attachment_type === 'file' ? '📄 Файл' : q.attachment_type === 'location' ? '📍 Геопозиция' : '');
+      const qText = q.text || (q.attachment_type === 'photo' ? '📷 Фото' : q.attachment_type === 'video' ? '🎥 Видео' : q.attachment_type === 'voice' ? '🎤 Голосовое' : q.attachment_type === 'file' ? '📄 Файл' : q.attachment_type === 'location' ? '📍 Геопозиция' : '');
       prefixHtml += '<div class="reply-quote" data-reply-target="' + msg.reply_to_id + '">' + escapeHtml(qText.slice(0, 80)) + '</div>';
     }
-    div.innerHTML = '<div class="bubble' + (msg.attachment_type === 'photo' ? ' has-photo' : '') + '">' + prefixHtml + bodyHtml +
+    div.innerHTML = '<div class="bubble' + ((msg.attachment_type === 'photo' || msg.attachment_type === 'video') ? ' has-photo' : '') + '">' + prefixHtml + bodyHtml +
       '<div class="bubble-time">' + editedTag + formatTime(msg.time) + ticks + '</div></div>';
     const quoteEl = div.querySelector('.reply-quote');
     if (quoteEl) {
@@ -3431,7 +3437,7 @@ PAGE = """
   let replyToMsg = null;
   function startReply(msg) {
     replyToMsg = msg;
-    const preview = msg.text || (msg.attachment_type === 'photo' ? '📷 Фото' : msg.attachment_type === 'voice' ? '🎤 Голосовое' : '');
+    const preview = msg.text || (msg.attachment_type === 'photo' ? '📷 Фото' : msg.attachment_type === 'video' ? '🎥 Видео' : msg.attachment_type === 'voice' ? '🎤 Голосовое' : '');
     document.getElementById('replyBarText').textContent = preview.slice(0, 90);
     document.getElementById('replyBar').style.display = 'flex';
     document.getElementById('textInput').focus();
@@ -3759,7 +3765,7 @@ PAGE = """
     menu.className = 'msg-menu';
 
     const galleryBtn = document.createElement('button');
-    galleryBtn.textContent = '🖼 Галерея';
+    galleryBtn.textContent = '🖼 Фото и видео';
     galleryBtn.addEventListener('click', () => { closeMessageMenu(); document.getElementById('photoInput').click(); });
     menu.appendChild(galleryBtn);
 
@@ -3786,14 +3792,41 @@ PAGE = """
     let files = Array.from(e.target.files);
     e.target.value = '';
     if (!files.length) return;
-    if (files.length > 50) { alert('Можно отправить не больше 50 фото за раз — беру первые 50.'); files = files.slice(0, 50); }
+    if (files.length > 50) { alert('Можно отправить не больше 50 файлов за раз — беру первые 50.'); files = files.slice(0, 50); }
     for (const file of files) {
       try {
-        const dataUrl = await resizeImage(file, 900, 0.55);
-        await sendAttachment('photo', dataUrl);
+        if (file.type.startsWith('video/')) {
+          if (file.size > 12 * 1024 * 1024) {
+            alert('Видео "' + file.name + '" слишком большое (максимум 12 МБ) — бесплатный хостинг ограничен по месту, пропускаю его.');
+            continue;
+          }
+          const dataUrl = await readFileAsDataUrl(file);
+          const duration = await getVideoDuration(dataUrl).catch(() => null);
+          await sendAttachment('video', dataUrl, duration ? Math.round(duration) : null, { size: file.size });
+        } else {
+          const dataUrl = await resizeImage(file, 900, 0.55);
+          await sendAttachment('photo', dataUrl);
+        }
       } catch (e2) { /* пропускаем битый файл, продолжаем остальные */ }
     }
   });
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+  function getVideoDuration(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => resolve(v.duration);
+      v.onerror = reject;
+      v.src = dataUrl;
+    });
+  }
 
   document.getElementById('fileInput').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -3950,7 +3983,7 @@ PAGE = """
         delBtn.textContent = cleanupSelected.size ? 'Удалить выбранные (' + cleanupSelected.size + ')' : 'Удалить выбранные';
       });
       row.appendChild(check);
-      const icon = it.attachment_type === 'photo' ? '📷' : it.attachment_type === 'voice' ? '🎤' : it.attachment_type === 'file' ? '📄' : '📍';
+      const icon = it.attachment_type === 'photo' ? '📷' : it.attachment_type === 'video' ? '🎥' : it.attachment_type === 'voice' ? '🎤' : it.attachment_type === 'file' ? '📄' : '📍';
       const info = document.createElement('div');
       info.className = 'cleanup-item-info';
       info.innerHTML = icon + ' с @' + escapeHtml(it.other) + '<div class="cleanup-item-size">' + formatBytes(it.approx_bytes) + '</div>';
