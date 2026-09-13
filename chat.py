@@ -1474,13 +1474,18 @@ PAGE = """
   .msg .meta { display: none; } /* время теперь внутри пузыря, см. .bubble-time */
   .ticks { margin-left: 5px; color: var(--text-dim); }
   .ticks.read { color: #3ba7f5; }
-  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border: 1px solid var(--incoming-bubble-border, var(--border)); border-radius: 4px 16px 16px 16px; padding: 10px 68px 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+  .msg .bubble { position: relative; background: var(--incoming-bubble, var(--panel-raised)); color: var(--incoming-bubble-text, var(--text)); border: 1px solid var(--incoming-bubble-border, var(--border)); border-radius: 4px 16px 16px 16px; padding: 10px 14px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
   .msg.own { align-self: flex-end; }
   .msg.own .bubble { background: var(--accent); color: #1b1204; border-radius: 18px 16px 3px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
-  .bubble-time { position: absolute; right: 10px; bottom: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; pointer-events: none; }
+  /* Текст и время лежат в одном flex-потоке внутри пузыря — раньше время было position:absolute
+     с фиксированным резервом места, и если текст короткий, а "изменено + время + галочки" в сумме
+     шире резерва — оно вылезало за левый край уже сжавшегося под короткий текст пузыря. */
+  .msg-content-row { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: 8px; row-gap: 2px; }
+  .msg-content-row .msg-text { flex: 1 1 auto; min-width: 0; word-wrap: break-word; white-space: pre-wrap; }
+  .bubble-time { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
   .msg.own .bubble-time { color: rgba(27,18,4,0.65); }
   .bubble-time .ticks.read { color: #2196f3; text-shadow: 0 0 1px rgba(255,255,255,0.5); }
-  .msg .edited-tag { font-size: 9.5px; color: var(--text-dim); }
+  .msg .edited-tag { font-size: 9.5px; color: inherit; opacity: 0.85; }
   .msg .translate-btn { display: block; margin-top: 4px; font-size: 11px; color: var(--signal); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; }
   .msg .translation { margin-top: 5px; padding-top: 5px; border-top: 1px dashed rgba(0,0,0,0.15); font-size: 13.5px; font-style: italic; opacity: 0.9; }
   .msg-menu-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 50; display: flex; align-items: flex-end; justify-content: center; animation: overlayFadeIn 0.18s ease; }
@@ -1499,7 +1504,7 @@ PAGE = """
   .msg .bubble img.msg-photo { max-width: 220px; border-radius: 10px; display: block; margin-top: 4px; cursor: pointer; }
   .msg .bubble video.msg-photo { max-width: 240px; max-height: 320px; border-radius: 10px; display: block; margin-top: 4px; }
   .bubble.has-photo { padding: 6px 6px 6px 6px; }
-  .bubble.has-photo .bubble-time { background: rgba(0,0,0,0.45); color: #fff; padding: 2px 6px; border-radius: 8px; right: 12px; bottom: 12px; }
+  .bubble.has-photo .bubble-time { position: absolute; margin-left: 0; background: rgba(0,0,0,0.45); color: #fff; padding: 2px 6px; border-radius: 8px; right: 12px; bottom: 12px; pointer-events: none; }
   .bubble.has-photo .bubble-time .ticks.read { color: #7ec8ff; }
   .voice-msg { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
   .file-msg, .location-msg { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; font-size: 24px; margin-top: 4px; }
@@ -3258,7 +3263,7 @@ PAGE = """
       const mapUrl = 'https://www.openstreetmap.org/?mlat=' + meta.lat + '&mlon=' + meta.lng + '#map=15/' + meta.lat + '/' + meta.lng;
       bodyHtml = '<a class="location-msg" href="' + mapUrl + '" target="_blank" rel="noopener">📍 <div><div class="file-name">Геопозиция</div><div class="file-size">Открыть на карте</div></div></a>';
     } else {
-      bodyHtml = escapeHtml(msg.text);
+      bodyHtml = '<span class="msg-text">' + escapeHtml(msg.text) + '</span>';
     }
     let prefixHtml = '';
     if (msg.forwarded_from) {
@@ -3274,8 +3279,15 @@ PAGE = """
       const qText = q.text || (q.attachment_type === 'photo' ? '📷 Фото' : q.attachment_type === 'video' ? '🎥 Видео' : q.attachment_type === 'voice' ? '🎤 Голосовое' : q.attachment_type === 'file' ? '📄 Файл' : q.attachment_type === 'location' ? '📍 Геопозиция' : '');
       prefixHtml += '<div class="reply-quote" data-reply-target="' + msg.reply_to_id + '">' + escapeHtml(qText.slice(0, 80)) + '</div>';
     }
-    div.innerHTML = '<div class="bubble' + ((msg.attachment_type === 'photo' || msg.attachment_type === 'video') ? ' has-photo' : '') + '">' + prefixHtml + bodyHtml +
-      '<div class="bubble-time">' + editedTag + formatTime(msg.time) + ticks + '</div></div>';
+    const bubbleTimeHtml = '<span class="bubble-time">' + editedTag + formatTime(msg.time) + ticks + '</span>';
+    const isMediaOverlay = (msg.attachment_type === 'photo' || msg.attachment_type === 'video');
+    // Фото/видео — время оверлеем поверх картинки (position:absolute, задан отдельным CSS-правилом).
+    // Всё остальное (текст, голосовые, файлы, геопозиция) — время в общем flex-потоке внутри пузыря,
+    // чтобы фон пузыря сам растягивался под всю строку и время не могло вылезти за его пределы.
+    const contentHtml = isMediaOverlay
+      ? (bodyHtml + bubbleTimeHtml)
+      : ('<div class="msg-content-row">' + bodyHtml + bubbleTimeHtml + '</div>');
+    div.innerHTML = '<div class="bubble' + (isMediaOverlay ? ' has-photo' : '') + '">' + prefixHtml + contentHtml + '</div>';
     const quoteEl = div.querySelector('.reply-quote');
     if (quoteEl) {
       quoteEl.addEventListener('click', (e) => {
