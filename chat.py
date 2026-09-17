@@ -1496,11 +1496,24 @@ PAGE = """
   .msg-menu button:active { background: var(--panel-raised); }
   .msg-menu button.danger { color: #f16565; }
   .msg-menu .menu-check-row { display: flex; align-items: center; gap: 10px; padding: 10px 22px; }
-  #composer { display: flex; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--border); background: var(--panel); align-items: center; }
+  #composer { position: relative; display: flex; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--border); background: var(--panel); align-items: center; }
+  /* --- Запись голосового: жесты как в Telegram --- */
+  #voiceRecordBar { display: none; flex: 1; align-items: center; gap: 10px; min-width: 0; }
+  #voiceRecordDot { width: 10px; height: 10px; border-radius: 50%; background: #e53935; flex-shrink: 0; animation: recPulse 1s infinite; }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+  #voiceRecordTimer, #voiceLockedTimer { font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: var(--text); flex-shrink: 0; min-width: 58px; }
+  #voiceRecordCancelHint { flex: 1; text-align: center; color: var(--text-dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #voiceLockedBar { display: none; flex: 1; align-items: center; gap: 10px; min-width: 0; }
+  #voiceLockedCancelBtn { background: none; border: none; color: var(--danger); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 4px; flex-shrink: 0; }
+  #voiceLockedTimer { flex: 1; text-align: center; }
+  #voiceLockedPauseBtn { background: var(--panel-raised); border: none; border-radius: 50%; width: 34px; height: 34px; font-size: 14px; cursor: pointer; flex-shrink: 0; }
+  #voiceLockIcon { display: none; position: absolute; right: 24px; bottom: 70px; width: 38px; height: 62px; background: var(--panel-raised); border: 1px solid var(--border); border-radius: 19px; align-items: flex-start; justify-content: center; padding-top: 8px; font-size: 16px; color: var(--text-dim); z-index: 6; box-shadow: 0 2px 10px rgba(0,0,0,0.2); transition: color 0.15s, transform 0.15s; }
+  #voiceLockIcon.reached { color: var(--accent); transform: scale(1.08); }
+  #voiceBtn.recording { background: #e53935; color: #fff; transition: none; }
+  #voiceBtn[data-mode="send-recording"] { background: var(--accent); color: #1b1204; }
   .composer-icon-btn { background: var(--panel-raised); border: none; border-radius: 10px; width: 42px; height: 42px; flex-shrink: 0; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s, transform 0.15s; }
   #voiceBtn[data-mode="send"] { background: var(--accent); color: #1b1204; }
-  .composer-icon-btn.recording { background: #c0392b; color: #fff; animation: pulse 1s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+  .composer-icon-btn.recording { background: #c0392b; color: #fff; }
   .msg .bubble img.msg-photo { max-width: 220px; border-radius: 10px; display: block; margin-top: 4px; cursor: pointer; }
   .msg .bubble video.msg-photo { max-width: 240px; max-height: 320px; border-radius: 10px; display: block; margin-top: 4px; }
   .bubble.has-photo { padding: 6px 6px 6px 6px; }
@@ -1753,6 +1766,17 @@ PAGE = """
     <input type="file" id="fileInput" style="display:none;">
     <button class="composer-icon-btn" id="attachBtn" title="Прикрепить">📎</button>
     <input type="text" id="textInput" placeholder="Сообщение..." enterkeyhint="send" autocomplete="off">
+    <div id="voiceRecordBar" style="display:none;">
+      <span id="voiceRecordDot"></span>
+      <span id="voiceRecordTimer">0:00,0</span>
+      <span id="voiceRecordCancelHint">‹ Влево — отмена</span>
+    </div>
+    <div id="voiceLockedBar" style="display:none;">
+      <button id="voiceLockedCancelBtn">ОТМЕНА</button>
+      <span id="voiceLockedTimer">0:00,0</span>
+      <button id="voiceLockedPauseBtn" title="Пауза">⏸</button>
+    </div>
+    <div id="voiceLockIcon">🔓</div>
     <button class="composer-icon-btn" id="voiceBtn" title="Удерживай, чтобы записать голосовое">🎤</button>
   </div>
   <div id="botActionBar" style="display:none;">
@@ -4017,26 +4041,61 @@ PAGE = """
     }
   });
 
-  // --- Голосовые сообщения (удержание кнопки микрофона) ---
+  // --- Голосовые сообщения: жесты как в Telegram — свайп влево отменяет запись,
+  // свайп вверх фиксирует её (можно отпустить палец, запись продолжится) ---
   let mediaRecorder = null;
   let recordedChunks = [];
   let recordStartTime = 0;
+  let recordStream = null;
+  let recordTimerInterval = null;
+  let recordTouchStartX = 0, recordTouchStartY = 0;
+  let recordCancelled = false;
+  let recordLocked = false;
+  let recordPaused = false;
   const voiceBtn = document.getElementById('voiceBtn');
+  const voiceRecordBar = document.getElementById('voiceRecordBar');
+  const voiceLockedBar = document.getElementById('voiceLockedBar');
+  const voiceLockIcon = document.getElementById('voiceLockIcon');
+  const voiceRecordTimerEl = document.getElementById('voiceRecordTimer');
+  const voiceLockedTimerEl = document.getElementById('voiceLockedTimer');
+  const voiceRecordCancelHint = document.getElementById('voiceRecordCancelHint');
+  const CANCEL_SWIPE_PX = 80;
+  const LOCK_SWIPE_PX = 60;
+
+  function formatRecordTime(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    const tenths = Math.floor((ms % 1000) / 100);
+    return mins + ':' + String(secs).padStart(2, '0') + ',' + tenths;
+  }
+  function updateRecordTimer() {
+    const text = formatRecordTime(Date.now() - recordStartTime);
+    voiceRecordTimerEl.textContent = text;
+    voiceLockedTimerEl.textContent = text;
+  }
 
   async function startRecording() {
-    if (voiceBtn.dataset.mode === 'send') return; // в режиме отправки долгое нажатие не пишет голосовое
+    if (voiceBtn.dataset.mode === 'send') return; // в обычном режиме отправки (есть текст) долгое нажатие не пишет голосовое
     if (!currentContact || mediaRecorder) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordedChunks = [];
-      mediaRecorder = new MediaRecorder(stream);
+      recordCancelled = false;
+      recordLocked = false;
+      recordPaused = false;
+      mediaRecorder = new MediaRecorder(recordStream);
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
       mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
+        recordStream.getTracks().forEach(t => t.stop());
+        recordStream = null;
+        clearInterval(recordTimerInterval);
+        recordTimerInterval = null;
         const duration = Math.round((Date.now() - recordStartTime) / 1000);
-        voiceBtn.classList.remove('recording');
+        const wasCancelled = recordCancelled;
+        hideRecordUI();
         mediaRecorder = null;
-        if (duration < 1) return; // случайное касание
+        if (wasCancelled || duration < 1) return; // отмена свайпом или случайное короткое касание — не отправляем
         const blob = new Blob(recordedChunks, { type: 'audio/webm' });
         const reader = new FileReader();
         reader.onload = () => sendAttachment('voice', reader.result, duration);
@@ -4044,29 +4103,96 @@ PAGE = """
       };
       mediaRecorder.start();
       recordStartTime = Date.now();
-      voiceBtn.classList.add('recording');
+      showRecordUI();
+      recordTimerInterval = setInterval(updateRecordTimer, 100);
+      updateRecordTimer();
     } catch (e) {
       alert('Нет доступа к микрофону — разреши его в настройках браузера');
     }
   }
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+  function stopRecording(cancel) {
+    recordCancelled = !!cancel;
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   }
-  voiceBtn.addEventListener('click', () => { if (voiceBtn.dataset.mode === 'send') send(); });
+  function showRecordUI() {
+    voiceRecordBar.style.display = 'flex';
+    voiceLockIcon.style.display = 'flex';
+    voiceLockIcon.classList.remove('reached');
+    voiceBtn.classList.add('recording');
+    document.getElementById('textInput').style.display = 'none';
+    document.getElementById('attachBtn').style.display = 'none';
+  }
+  function hideRecordUI() {
+    voiceRecordBar.style.display = 'none';
+    voiceLockedBar.style.display = 'none';
+    voiceLockIcon.style.display = 'none';
+    voiceBtn.classList.remove('recording');
+    voiceBtn.style.transform = '';
+    voiceRecordCancelHint.style.opacity = '1';
+    document.getElementById('textInput').style.display = '';
+    document.getElementById('attachBtn').style.display = '';
+    document.getElementById('voiceLockedPauseBtn').textContent = '⏸';
+    recordLocked = false;
+    updateComposerMode(); // возвращаем 🎤/➤ в обычный режим (зависит от того, есть ли текст в поле)
+  }
+  function enterLockedMode() {
+    recordLocked = true;
+    voiceRecordBar.style.display = 'none';
+    voiceLockIcon.style.display = 'none';
+    voiceLockedBar.style.display = 'flex';
+    voiceBtn.style.transform = '';
+    voiceBtn.classList.remove('recording');
+    voiceBtn.textContent = '➤';
+    voiceBtn.dataset.mode = 'send-recording'; // тап по кнопке теперь останавливает и отправляет запись
+  }
+
+  voiceBtn.addEventListener('click', () => {
+    if (voiceBtn.dataset.mode === 'send-recording') { stopRecording(false); return; }
+    if (voiceBtn.dataset.mode === 'send') send();
+  });
   voiceBtn.addEventListener('touchstart', (e) => {
-    if (voiceBtn.dataset.mode === 'send') return; // не глушим обычный тап-клик в режиме отправки
+    if (voiceBtn.dataset.mode === 'send' || voiceBtn.dataset.mode === 'send-recording') return; // не глушим обычный тап-клик
     e.preventDefault();
+    const t = e.touches[0];
+    recordTouchStartX = t.clientX; recordTouchStartY = t.clientY;
     startRecording();
-  });
+  }, { passive: false });
+  voiceBtn.addEventListener('touchmove', (e) => {
+    if (!mediaRecorder || recordLocked) return;
+    const t = e.touches[0];
+    const dx = t.clientX - recordTouchStartX;
+    const dy = t.clientY - recordTouchStartY;
+    if (dx < 0) {
+      const progress = Math.min(1, Math.abs(dx) / CANCEL_SWIPE_PX);
+      voiceRecordCancelHint.style.opacity = String(1 - progress * 0.6);
+      voiceBtn.style.transform = 'translateX(' + Math.max(dx, -CANCEL_SWIPE_PX) + 'px)';
+      if (Math.abs(dx) > CANCEL_SWIPE_PX) { stopRecording(true); return; }
+    }
+    if (dy < 0) {
+      voiceLockIcon.classList.toggle('reached', Math.abs(dy) > LOCK_SWIPE_PX);
+      if (Math.abs(dy) > LOCK_SWIPE_PX * 1.4) enterLockedMode();
+    }
+  }, { passive: true });
   voiceBtn.addEventListener('touchend', (e) => {
-    if (voiceBtn.dataset.mode === 'send') return;
+    if (voiceBtn.dataset.mode === 'send' || voiceBtn.dataset.mode === 'send-recording') return;
     e.preventDefault();
-    stopRecording();
+    if (recordLocked) return; // в зафиксированном режиме отпускание пальца ничего не делает — ждём тап по кнопке
+    stopRecording(false);
+  }, { passive: false });
+  // Мышь (десктоп) — упрощённо, без жестов свайпа: зажал — пишет, отпустил — отправляет
+  voiceBtn.addEventListener('mousedown', () => { if (voiceBtn.dataset.mode !== 'send' && voiceBtn.dataset.mode !== 'send-recording') startRecording(); });
+  voiceBtn.addEventListener('mouseup', () => { if (mediaRecorder && !recordLocked) stopRecording(false); });
+  voiceBtn.addEventListener('mouseleave', () => { if (mediaRecorder && !recordLocked) stopRecording(false); });
+
+  document.getElementById('voiceLockedCancelBtn').addEventListener('click', () => stopRecording(true));
+  document.getElementById('voiceLockedPauseBtn').addEventListener('click', () => {
+    if (!mediaRecorder) return;
+    const btn = document.getElementById('voiceLockedPauseBtn');
+    if (recordPaused) { mediaRecorder.resume(); recordPaused = false; btn.textContent = '⏸'; }
+    else { mediaRecorder.pause(); recordPaused = true; btn.textContent = '▶'; }
   });
-  voiceBtn.addEventListener('mousedown', startRecording);
-  voiceBtn.addEventListener('mouseup', stopRecording);
-  voiceBtn.addEventListener('mouseleave', stopRecording);
   updateComposerMode();
+
 
   function playVoice(btn, dataUrl) {
     if (btn._audio && !btn._audio.paused) { btn._audio.pause(); btn._audio.currentTime = 0; btn.textContent = '▶'; return; }
