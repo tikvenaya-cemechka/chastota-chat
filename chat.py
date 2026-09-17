@@ -4107,7 +4107,13 @@ PAGE = """
       recordTimerInterval = setInterval(updateRecordTimer, 100);
       updateRecordTimer();
     } catch (e) {
-      alert('Нет доступа к микрофону — разреши его в настройках браузера');
+      let msg = 'Нет доступа к микрофону — разреши его в настройках браузера.';
+      if (e && e.name === 'NotFoundError') msg = 'Микрофон не найден на устройстве.';
+      else if (e && e.name === 'NotReadableError') msg = 'Микрофон занят другим приложением или вкладкой — закрой их и попробуй снова.';
+      else if (e && e.name === 'NotAllowedError') msg = 'Доступ к микрофону запрещён. Проверь: 1) разрешение сайту в настройках браузера, 2) разрешение микрофона для самого браузера в настройках Android (Настройки → Приложения → [твой браузер] → Разрешения → Микрофон).';
+      else if (e && e.name === 'SecurityError') msg = 'Браузер блокирует доступ к микрофону на этой странице (небезопасное соединение или настройки конфиденциальности).';
+      else if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) msg = 'Этот браузер вообще не поддерживает запись голосовых.';
+      alert(msg + (e && e.name ? '\n\n(техническая причина: ' + e.name + ')' : ''));
     }
   }
   function stopRecording(cancel) {
