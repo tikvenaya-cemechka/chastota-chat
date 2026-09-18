@@ -105,12 +105,12 @@ def send_push_notification(username, title, body, data=None):
 
 @app.after_request
 def add_no_cache_headers(response):
-    """Запрещаем кэширование ответов /api/* — иначе браузер или прокси (Cloudflare Worker)
-    могут отдавать устаревшие сообщения вместо свежих при повторном открытии чата."""
-    if request.path.startswith('/api/'):
-        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
+    """Запрещаем кэширование ВСЕХ ответов, включая саму HTML-страницу — иначе браузер или
+    прокси (Cloudflare Worker) могут отдавать старую версию сайта после обновления кода,
+    и никакие правки в JS не будут видны, пока кэш не сбросится сам по себе."""
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
     return response
 
 FOUNDER_USERNAMES = ['akulin', 'alina123']  # впиши сюда свой юзернейм и юзернеймы друзей, когда будете готовы
